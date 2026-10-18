@@ -6,7 +6,7 @@
 //! until the whole batch has planned successfully, so a batch is atomic: if any
 //! op fails, none of it is applied.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -50,7 +50,15 @@ struct Work {
     writes: Vec<Write>,
     /// The node each op created, by op index, for `$N` references.
     created: Vec<Option<NodeId>>,
+    /// A batch that adds many nodes without saying where lays them out together at the end,
+    /// instead of one by one: `Some(origin)` is where the drawing's top-left goes.
+    defer_to: Option<Vec2>,
+    /// The nodes waiting for that layout.
+    deferred: Vec<NodeId>,
 }
+
+/// A batch creating at least this many nodes without positions gets a layered layout.
+pub const AUTO_LAYOUT_MIN: usize = 3;
 
 /// A node's note may hold this many characters.
 fn check_note(text: &str) -> Result<(), String> {
@@ -75,12 +83,24 @@ pub fn plan(snapshot: &Snapshot, ops: &[Op]) -> Result<Plan, OpError> {
         background: snapshot.background.clone(),
         writes: Vec::new(),
         created: Vec::with_capacity(ops.len()),
+        defer_to: None,
+        deferred: Vec::new(),
     };
+    let unplaced = ops.iter().filter(|op| matches!(op, Op::CreateNode { x: None, y: None, .. })).count();
+    if unplaced >= AUTO_LAYOUT_MIN {
+        // A new drawing goes below everything that is there, or at the origin of an empty graph.
+        let pos = layout::derive_positions(&work.places);
+        work.defer_to = Some(match (pos.values().map(|p| p.x).min(), pos.values().map(|p| p.y).max()) {
+            (Some(left), Some(bottom)) => Vec2::new(left, bottom + NODE_HEIGHT + 2 * layout::MARGIN),
+            _ => Vec2::ZERO,
+        });
+    }
     let mut results = Vec::with_capacity(ops.len());
     for (op_index, op) in ops.iter().enumerate() {
         let result = work.apply(op).map_err(|message| OpError { op_index, message })?;
         results.push(result);
     }
+    work.lay_out_deferred();
     Ok(Plan { writes: work.writes, results })
 }
 
@@ -152,6 +172,17 @@ impl Work {
 
     fn name(&self, id: NodeId) -> String {
         self.nodes.get(&id).map(describe).unwrap_or_else(|| format!("{id:?}"))
+    }
+
+    /// Lay out the nodes of a big batch together: layers left to right by dependency, then fewer crossings.
+    fn lay_out_deferred(&mut self) {
+        let Some(origin) = self.defer_to else { return };
+        let nodes = std::mem::take(&mut self.deferred);
+        let inside: BTreeSet<NodeId> = nodes.iter().copied().collect();
+        let pairs: Vec<_> = self.pairs().into_iter().filter(|(f, t)| inside.contains(f) && inside.contains(t)).collect();
+        let positions = layout::layered(&nodes, &pairs);
+        let changes = layout::as_places(&positions, &pairs, origin);
+        self.set_places(changes, None);
     }
 
     fn pairs(&self) -> Vec<(NodeId, NodeId)> {
@@ -249,6 +280,25 @@ impl Work {
                     let bottom = pos.values().map(|p| p.y).max().unwrap_or(0);
                     (None, Vec2::new(left, bottom + NODE_HEIGHT + 2 * layout::MARGIN))
                 };
+                if let (Some(origin), None, None) = (self.defer_to, x, y) {
+                    // Laid out with the rest of the batch at the end; until then it waits where nothing else is.
+                    let own = Place::at_origin(origin);
+                    self.writes.push(Write::CreateNode { id, title: title.clone(), place: own });
+                    self.nodes.insert(id, NodeRec { id, key: None, title: title.clone(), place: own, note: String::new(), type_id: None });
+                    self.places.insert(id, own);
+                    self.deferred.push(id);
+                    self.created.push(Some(id));
+                    if let Some(t) = node_type {
+                        self.set_node_type(id, t);
+                    }
+                    for dep in deps {
+                        self.link(id, dep, None)?;
+                    }
+                    for d in dependants {
+                        self.link(d, id, None)?;
+                    }
+                    return Ok(json!({ "op": "create_node", "id": id.0, "title": title }));
+                }
                 let changes = layout::add_node(&self.places, &self.pairs(), id, parent, at);
                 let own = changes.iter().find(|(n, _)| *n == id).map(|(_, p)| *p).expect("add_node places the new node");
                 self.writes.push(Write::CreateNode { id, title: title.clone(), place: own });
@@ -459,6 +509,36 @@ mod tests {
         let snap = g.snapshot();
         let pos = layout::derive_positions(&snap.places());
         snap.nodes.values().map(|n| (n.title.clone(), pos[&n.id])).collect()
+    }
+
+    #[test]
+    fn a_big_batch_without_positions_gets_a_layered_layout() {
+        let g = Graph::new();
+        // Source, two branches, a join: dependencies end up left of their dependants.
+        run(&g, json!([
+            { "op": "create_node", "title": "join" },
+            { "op": "create_node", "title": "left" },
+            { "op": "create_node", "title": "right" },
+            { "op": "create_node", "title": "source" },
+            { "op": "link", "from": "$0", "to": "$1" },
+            { "op": "link", "from": "$0", "to": "$2" },
+            { "op": "link", "from": "$1", "to": "$3" },
+            { "op": "link", "from": "$2", "to": "$3" },
+        ])).unwrap();
+        let p = all_positions(&g);
+        assert!(p["source"].x < p["left"].x && p["left"].x < p["join"].x, "{p:?}");
+        assert_eq!(p["left"].x, p["right"].x);
+        assert_ne!(p["left"].y, p["right"].y);
+        assert_eq!(p["source"].x, 0);
+        // A later batch of its own lands below this drawing, not on it.
+        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b" }, { "op": "create_node", "title": "c" }])).unwrap();
+        let q = all_positions(&g);
+        assert!(q["a"].y > q["join"].y.max(q["left"].y).max(q["right"].y), "{q:?}");
+        // Explicit positions are respected, and small batches place one by one.
+        let h = Graph::new();
+        run(&h, json!([{ "op": "create_node", "title": "p", "x": 500, "y": 300 }, { "op": "create_node", "title": "q", "x": 0, "y": 0 }, { "op": "create_node", "title": "r", "x": 900, "y": 0 }])).unwrap();
+        let r = all_positions(&h);
+        assert_eq!((r["p"], r["r"]), (Vec2::new(500, 300), Vec2::new(900, 0)));
     }
 
     #[test]

@@ -8,8 +8,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use waypoint_model::{NodeId, Place, Vec2};
 
 mod anchors;
+mod initial;
 mod room;
 pub use anchors::{bridge_edges, creates_cycle, repair_anchors};
+pub use initial::{COLUMN_PITCH, as_places, layered};
 pub use room::{EDGE_CLEARANCE, FLOW_GAP, MARGIN, MAX_WRITES, add_node, drop_node, make_room, repair_overlaps};
 
 #[cfg(target_arch = "wasm32")]

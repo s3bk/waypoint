@@ -1,4 +1,4 @@
-import { Application, Container, Graphics, Text } from "pixi.js";
+import { Application, CanvasTextMetrics, Container, Graphics, Text, TextStyle } from "pixi.js";
 import { WebsocketProvider } from "y-websocket";
 import init, {
   creates_cycle,
@@ -252,6 +252,9 @@ async function main() {
 
   let labels: Text[] = [];
   let lastPositions: Record<string, Vec2> = {};
+  let lastBackground = "";
+  /** The side dots of the node under the pointer. Separate from `render`, so hovering and zooming do not rebuild every label. */
+  let handles = new Graphics();
   let edgeSegments: { key: string; a: Vec2; b: Vec2 }[] = [];
   let localDrag: (Drag & { grabX: number; grabY: number }) | null = null;
   /** A drag that was dropped but whose move has not come back from the server yet; kept on screen so the node does not jump back and forth. */
@@ -317,6 +320,24 @@ async function main() {
     return { from, to };
   }
 
+  /** At most two lines, ending in an ellipsis. Cutting the text is much cheaper to draw than masking each label; the full title is in the editor. */
+  function clipTitle(text: string, style: TextStyle): string {
+    const lines = CanvasTextMetrics.measureText(text, style).lines;
+    if (lines.length <= 2) return text;
+    let second = lines[1].trimEnd();
+    while (second && CanvasTextMetrics.measureText(`${second}…`, style).lines.length > 1) second = second.slice(0, -1);
+    return `${lines[0]}\n${second}…`;
+  }
+
+  function drawHandles() {
+    handles.clear();
+    const showHandles = connecting ? connecting.node : localDrag ? null : hoverNode;
+    const p = showHandles ? lastPositions[showHandles] : undefined;
+    if (!p) return;
+    const handleR = HANDLE_R / camera.zoom;
+    for (const x of [0, NODE_W]) handles.circle(p.x + x, p.y + NODE_H / 2, handleR).fill(hexNum(lastBackground)).stroke({ width: 2 / camera.zoom, color: ACCENT });
+  }
+
   function render() {
     world.removeChildren().forEach((c) => c.destroy({ children: true }));
     labels = [];
@@ -334,6 +355,7 @@ async function main() {
       }
     }
     lastPositions = positions;
+    lastBackground = reg.background;
 
     const centers = new Map<string, Vec2>();
     for (const [id, p] of Object.entries(positions)) centers.set(id, { x: p.x + NODE_W / 2, y: p.y + NODE_H / 2 });
@@ -392,9 +414,6 @@ async function main() {
       arrow(rubber, start, pointer, color);
     }
 
-    const handleR = HANDLE_R / camera.zoom;
-    const showHandles = connecting ? connecting.node : localDrag ? null : hoverNode;
-
     for (const [id, p] of Object.entries(positions)) {
       const node = new Container();
       node.position.set(p.x, p.y);
@@ -415,26 +434,20 @@ async function main() {
       node.addChild(body);
 
       const title = graph.title(id);
-      const label = new Text({
-        text: title || "untitled",
-        style: {
-          fill: hexNum(type.fg),
-          fontSize: 14,
-          lineHeight: 17,
-          fontFamily: "system-ui, sans-serif",
-          wordWrap: true,
-          wordWrapWidth: NODE_W - 24,
-          breakWords: true,
-        },
-        resolution: labelResolution(),
+      const titleStyle = new TextStyle({
+        fill: hexNum(type.fg),
+        fontSize: 14,
+        lineHeight: 17,
+        fontFamily: "system-ui, sans-serif",
+        wordWrap: true,
+        wordWrapWidth: NODE_W - 24,
+        breakWords: true,
       });
+      const label = new Text({ text: clipTitle(title || "untitled", titleStyle), style: titleStyle, resolution: labelResolution() });
       label.alpha = title ? 1 : 0.4;
       const key = graph.key(id);
       label.position.set(12, NODE_H / 2 - Math.min(label.height, 34) / 2);
-      // Long titles are clipped to two lines; the full text is in the editor.
-      const clip = new Graphics().rect(8, 5, NODE_W - 16, NODE_H - 10).fill(0xffffff);
-      label.mask = clip;
-      node.addChild(clip, label);
+      node.addChild(label);
       labels.push(label);
       if (key !== undefined) {
         // The short key (#12): how people and agents refer to this node. It never changes, even on rename.
@@ -463,14 +476,12 @@ async function main() {
         labels.push(count);
       }
 
-      if (showHandles === id) {
-        const dots = new Graphics();
-        for (const x of [0, NODE_W]) dots.circle(x, NODE_H / 2, handleR).fill(hexNum(reg.background)).stroke({ width: 2 / camera.zoom, color: ACCENT });
-        node.addChild(dots);
-      }
       world.addChild(node);
     }
     world.addChild(rubber);
+    handles = new Graphics();
+    world.addChild(handles);
+    drawHandles();
 
     updateHint(moving.size, linkTarget);
     applyCamera();
@@ -807,7 +818,8 @@ async function main() {
       const hover = nodeAt(worldOf(e), HANDLE_HIT / camera.zoom) ?? null;
       if (hover !== hoverNode) {
         hoverNode = hover;
-        render();
+        drawHandles();
+        applyCamera();
       }
     }
   });
@@ -879,8 +891,11 @@ async function main() {
     "wheel",
     (e) => {
       e.preventDefault();
-      camera.zoomAt({ x: e.offsetX, y: e.offsetY }, e.deltaY < 0 ? 1.1 : 1 / 1.1);
-      render(); // handle sizes depend on zoom
+      // Zoom by how far the wheel turned, not by how many events came: a trackpad sends dozens per swipe.
+      const pixels = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+      camera.zoomAt({ x: e.offsetX, y: e.offsetY }, Math.exp(-Math.max(-120, Math.min(120, pixels)) * 0.001));
+      drawHandles(); // handle sizes depend on zoom
+      applyCamera();
     },
     { passive: false },
   );

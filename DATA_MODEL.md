@@ -414,6 +414,15 @@ client uses the same crate compiled to WASM (humans, so drag-drop and add
 feel instant). That avoids two implementations drifting apart in behaviour.
 Confirmed: WASM for the client.
 
+**Initial layout (implemented).** A batch with at least 3 `create_node` ops that give
+no `x`/`y` skips the one-by-one placement and lays the new nodes out together at the
+end (`layout::layered`): layers by longest dependency path (dependencies left, one
+column per layer), invisible stand-ins on long links, barycentre sweeps keeping the
+ordering with the fewest crossings, then rows pulled toward neighbours without
+overlap. Each node is anchored to its nearest dependency in the batch; nodes with no
+dependency sit at the origin of the new drawing, which goes below everything already
+in the graph (or at the origin of an empty one). Explicit `x`/`y` are respected.
+
 **Layout changes in history.** Position writes are tagged `layout` in the
 change log so "what did the agent change" can hide them and show only
 meaning changes (nodes, edges, notes, status). Undoing a batch restores the

@@ -43,6 +43,9 @@ POST /api/graphs/{graph}/apply takes a batch of ops, applied atomically (any fai
 
 Ops (field `op`):
 - create_node {title, depends_on?: [ref], dependants?: [ref], x?, y?, node_type?: name}
+                                  A batch with 3 or more create_node ops that give no x/y is laid out as a
+                                  whole (layers left to right by dependency, few crossings), below anything
+                                  already in the graph. You do not need to pass positions to build a graph.
 - rename_node {node, title}
 - delete_node {node}              links through it are joined
 - link {from, to, edge_type?: name}  from depends on to; refused if it closes a cycle; relinking retypes

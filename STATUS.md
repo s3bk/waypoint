@@ -87,11 +87,13 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
   `X-Waypoint-Actor` (free-form name; may repeat). Undo history and the change log's `peer`
   go by id; without an id the name is the id.
 - **Cleanup:** repair removes links whose end was deleted (or never existed).
+- **Initial layout:** a batch creating 3 or more nodes without `x`/`y` is laid out together (`crates/layout/src/initial.rs`, layered drawing: dependencies left, long links get stand-ins, barycentre sweeps, rows pulled toward neighbours), placed below existing nodes; smaller batches place nodes one by one.
+- **Speed:** hover and zoom redraw only the side dots and the camera, not every label; titles are clipped to two lines by cutting text rather than masking. Zoom is proportional to wheel distance. `cargo test -p waypoint-e2e --test perf -- --ignored` times a real graph (`WAYPOINT_PERF_GRAPH=<GET /full dump>`).
 - The canvas draws on demand, not every frame (it used a core while idle).
 
 ## Verified
 
-- 120 Rust unit tests: 44 layout, 57 server, 10 MCP, 9 model, plus 11 browser tests in
+- 127 Rust unit tests: 50 layout, 58 server, 10 MCP, 9 model, plus 11 browser tests in
   `crates/e2e` (thirtyfour, headless Chrome; `cargo test -p waypoint-e2e`):
   editing, MCP agent alongside a browser, keys and the Share panel, New graph,
   and a conflicted edge being flagged and kept. The editing test ends with
