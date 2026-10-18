@@ -69,14 +69,77 @@ redo your own edits.
 
 ## Agents (MCP)
 
-Build and register the MCP server with your MCP client; the Waypoint server must
-be running, because edits go through it so everyone sees them live.
+`waypoint-mcp` is a stdio MCP server. It does not hold the graph: it forwards each
+tool call to a running Waypoint server over HTTP, so a human with the web UI open
+sees the agent's edits live.
 
-```sh
-cargo build -p waypoint-mcp
-# Claude Code, for example:
-claude mcp add waypoint -- "$PWD/target/debug/waypoint-mcp"
-```
+### Install
+
+You need a Rust toolchain (stable, 1.85 or newer, for edition 2024; get it from
+https://rustup.rs) and a Waypoint server to talk to: your own (`cargo run -p
+waypoint-server`, on `http://127.0.0.1:3000`) or a hosted one, such as
+https://waypoint.qdat.net.
+
+1. Build and put the binary at a fixed path. Either, from a checkout of this repo:
+
+   ```sh
+   cargo install --path crates/mcp          # installs ~/.cargo/bin/waypoint-mcp
+   ```
+
+   or without a checkout:
+
+   ```sh
+   cargo install --git git@github.com:s3bk/waypoint.git waypoint-mcp
+   ```
+
+   (To keep it inside the checkout instead: `cargo build --release -p waypoint-mcp`
+   gives `target/release/waypoint-mcp`; use that absolute path below.)
+
+2. Register it with your MCP client.
+
+   **Claude Code**, for the current user in every project:
+
+   ```sh
+   claude mcp add waypoint --env WAYPOINT_URL=https://waypoint.qdat.net -- waypoint-mcp
+   ```
+
+   Add `--scope project` to write it to the project's `.mcp.json` (shareable; it holds no
+   key) or `--scope local` for just this project and user. Leave out `--env WAYPOINT_URL=…`
+   for a server on `http://127.0.0.1:3000`. If `waypoint-mcp` is not on `PATH`, give
+   the absolute path after `--`.
+
+   **Any other client** that reads JSON config:
+
+   ```json
+   { "mcpServers": { "waypoint": {
+       "command": "waypoint-mcp",
+       "env": { "WAYPOINT_URL": "https://waypoint.qdat.net", "WAYPOINT_ACTOR": "my-agent" }
+   } } }
+   ```
+
+3. Restart the client, then check: in Claude Code run `claude mcp list` (it should say
+   `waypoint ... Connected`) or `/mcp`; the server lists 25 tools.
+
+4. Connect to a graph. Ask the user for a key or share link (the Share panel in the
+   web UI makes them), then call the `connect` tool with it. Use an **editor** key to
+   let the agent change the graph, a **viewer** key to let it only look, and never
+   the owner key. After `connect`, the other tools work. If the tools answer "not
+   connected", call `connect` first.
+
+To remove it: `claude mcp remove waypoint` (and `cargo uninstall waypoint-mcp`).
+
+### Troubleshooting
+
+- `failed to connect` / the server does not start: run `waypoint-mcp` in a terminal.
+  It prints to stderr and waits for JSON on stdin; Ctrl+D quits. Check the path.
+- "cannot reach the Waypoint server": `WAYPOINT_URL` is wrong or the server is down;
+  `curl $WAYPOINT_URL/health` should print `ok`.
+- "that key was not accepted": the key belongs to another server, or was mistyped.
+- A write tool says the key may not write: it is a viewer key; ask for an editor key.
+- A tool is missing or fails on an old server: the server must be as new as the
+  MCP binary (the type and undo tools need a current server).
+
+### Configuration and behaviour
 
 `WAYPOINT_KEY` is optional. Leave it out (the usual setup, so no key is written into
 any config): the user pastes a key or share link into the conversation and the
