@@ -16,7 +16,7 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
 - **Layout crate** (native and WASM): anchored positions, drag with or without
   sub-graph, make-room, add/drop with edge avoidance, anchor repair, cycle
   check, link joining on delete.
-- **Agent API and MCP** (`crates/mcp`, binary `waypoint-mcp`): 24 tools (the graph and node reads, `get_full_graph`, `get_types`, create/rename/delete/link/unlink/move, `set_note`/`append_note`, `set_node_type`, `upsert_*_type`, `remove_*_type`, `undo`, `redo`, `apply_batch`). Batches are atomic, max 100 ops, `$N` refers to a node created
+- **Agent API and MCP** (`crates/mcp`, binary `waypoint-mcp`): 25 tools (`connect`, which opens a graph with a key the user gives, several at once via `graph`; the graph and node reads, `get_full_graph`, `get_types`, create/rename/delete/link/unlink/move, `set_note`/`append_note`, `set_node_type`, `upsert_*_type`, `remove_*_type`, `undo`, `redo`, `apply_batch`). Batches are atomic, max 100 ops, `$N` refers to a node created
   earlier in the batch.
 - **Keys** (`crates/server/src/auth.rs`): owner → editor → viewer, each derived
   from the one above by a hash; the graph is identified by its viewer key; a key
@@ -91,7 +91,7 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
 
 ## Verified
 
-- 119 Rust unit tests: 44 layout, 57 server, 9 MCP, 9 model, plus 10 browser tests in
+- 120 Rust unit tests: 44 layout, 57 server, 10 MCP, 9 model, plus 11 browser tests in
   `crates/e2e` (thirtyfour, headless Chrome; `cargo test -p waypoint-e2e`):
   editing, MCP agent alongside a browser, keys and the Share panel, New graph,
   and a conflicted edge being flagged and kept. The editing test ends with

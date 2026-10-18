@@ -19,10 +19,27 @@ pub trait Backend {
     fn post(&self, path: &str, body: &Value) -> Result<Value, String>;
     /// GET a plain-text reply (such as DOT); it comes back as a JSON string.
     fn get_text(&self, path: &str) -> Result<Value, String>;
+    /// Open another graph with `key`, calling it `name` (default: its title). Returns `{name, graph, role, title}`, or why the key was refused.
+    fn connect(&self, _key: &str, _name: Option<&str>) -> Result<Value, String> {
+        Err("this backend cannot change keys".into())
+    }
+    /// Choose the graph the next requests go to: the one called `graph` (a name or id), or with
+    /// `None` the most recently connected. `Ok(None)` means the backend has no connections of its own.
+    fn select(&self, _graph: Option<&str>) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+/// The key inside what a person pasted: a bare key, or a share link with `#key=` / `?key=`.
+pub fn extract_key(text: &str) -> Option<String> {
+    let start = text.find("wp_")?;
+    let key: String = text[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    (key.len() > 3).then_some(key)
 }
 
 pub struct Config {
-    /// The graph the key opens, identified by its viewer key (the server tells us).
+    /// The graph the key opens, identified by its viewer key (the server tells us). Empty when
+    /// no key was configured; the user then gives one with the `connect` tool.
     pub graph: String,
 }
 
@@ -40,9 +57,22 @@ fn node_ref_schema(description: &str) -> Value {
 }
 
 fn tools() -> Vec<Value> {
+    let mut all = tool_list();
+    for t in all.iter_mut().filter(|t| t["name"] != "connect") {
+        t["inputSchema"]["properties"]["graph"] = json!({ "type": "string", "description": "Which connected graph to use (its name from `connect`). Default: the most recently connected." });
+    }
+    all
+}
+
+fn tool_list() -> Vec<Value> {
     let node = |d: &str| node_ref_schema(d);
     let node_help = "Node reference: a key like \"#12\" (preferred), a node id, or \"$0\" for a node created earlier in the same batch.";
     vec![
+        json!({
+            "name": "connect",
+            "description": "Open a graph with a key the user gave you (a bare key or a share link). Needed once before any other tool when the server was started without a key; call it again to switch graphs. The key decides what you may do: viewer reads, editor also changes. Never ask for or use an owner key unless the user insists. Several graphs can be open at once: give each a `name`, then pass that name as `graph` to the other tools (without `graph` they use the most recently connected one).",
+            "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "A short name for this graph. Default: its title." }, "key": { "type": "string", "description": "The key (wp_editor_…, wp_viewer_… or wp_owner_…) or a link containing it." } }, "required": ["key"] }
+        }),
         json!({
             "name": "get_graph",
             "description": "Summary of the graph: how many nodes and links it has, and how many `conflicts` (see get_conflicts).",
@@ -221,7 +251,15 @@ fn str_arg<'a>(args: &'a Value, name: &str) -> Result<&'a str, String> {
 }
 
 fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> Result<Value, String> {
-    let graph = encode(&cfg.graph);
+    if name == "connect" {
+        let key = extract_key(str_arg(args, "key")?).ok_or("that does not contain a Waypoint key (they start with wp_owner_, wp_editor_ or wp_viewer_)")?;
+        return backend.connect(&key, args.get("name").and_then(Value::as_str));
+    }
+    let graph = backend.select(args.get("graph").and_then(Value::as_str))?.unwrap_or_else(|| cfg.graph.clone());
+    if graph.is_empty() {
+        return Err("not connected to a graph yet: ask the user for a Waypoint key (or a share link) and call `connect` with it".into());
+    }
+    let graph = encode(&graph);
     let base = format!("/api/graphs/{graph}");
     // Write tools are all one batch of one op.
     let one = |mut op: Value| {
@@ -343,6 +381,13 @@ pub fn handle(request: &Value, cfg: &Config, backend: &dyn Backend) -> Option<Va
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keys_are_found_in_pasted_text() {
+        assert_eq!(super::extract_key("wp_editor_ab12").as_deref(), Some("wp_editor_ab12"));
+        assert_eq!(super::extract_key("https://x.net/#key=wp_viewer_9f&z=1").as_deref(), Some("wp_viewer_9f"));
+        assert_eq!(super::extract_key("no key here"), None);
+    }
+
     use super::*;
     use std::cell::RefCell;
 
@@ -415,7 +460,7 @@ mod tests {
                 assert!(t["inputSchema"]["properties"][req.as_str().unwrap()].is_object(), "{}: {req}", t["name"]);
             }
         }
-        assert_eq!(names.len(), 24);
+        assert_eq!(names.len(), 25);
     }
 
     #[test]

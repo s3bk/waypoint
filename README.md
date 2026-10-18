@@ -75,15 +75,20 @@ be running, because edits go through it so everyone sees them live.
 ```sh
 cargo build -p waypoint-mcp
 # Claude Code, for example:
-claude mcp add --env WAYPOINT_KEY=wp_editor_… waypoint -- "$PWD/target/debug/waypoint-mcp"
+claude mcp add waypoint -- "$PWD/target/debug/waypoint-mcp"
 ```
 
-`WAYPOINT_KEY` is required: it opens one graph and decides what the agent may do
+`WAYPOINT_KEY` is optional. Leave it out (the usual setup, so no key is written into
+any config): the user pastes a key or share link into the conversation and the
+agent calls `connect`. Keys are never stored by the MCP server, they stay in the
+transcript, so after a restart the agent connects again. Several graphs can be open
+at once: name each with `connect` (`name`) and pass that name as `graph` to the other
+tools (without it the latest is used). The key decides what the agent may do
 (an editor or owner key reads and changes; a viewer key only reads, and write
 tools return an error). `WAYPOINT_URL` (default `http://127.0.0.1:3000`)
 is optional; `WAYPOINT_ACTOR` (default `agent`) is the name shown for this agent
 in the change log (names may repeat). Each MCP process also sends a random peer
-id, which is what keeps its undo history apart from everyone else's. 24 tools:
+id, which is what keeps its undo history apart from everyone else's. 25 tools (`connect` plus):
 `get_graph`, `get_full_graph`, `search_nodes`, `get_node`, `get_neighbours`,
 `get_conflicts`, `get_dot`, `get_types`, `create_node`, `rename_node`,
 `delete_node`, `link_nodes`, `unlink_nodes`, `move_node` (`with_dependencies`
