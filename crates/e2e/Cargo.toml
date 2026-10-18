@@ -2,6 +2,7 @@
 name = "waypoint-e2e"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 
 # Browser tests: they start a throwaway server, the Vite dev server and

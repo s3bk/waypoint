@@ -5,6 +5,7 @@ members = ["crates/model", "crates/layout", "crates/server", "crates/mcp", "crat
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

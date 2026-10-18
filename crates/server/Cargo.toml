@@ -2,6 +2,7 @@
 name = "waypoint-server"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 waypoint-model = { path = "../model" }

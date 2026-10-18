@@ -2,6 +2,7 @@
 name = "waypoint-mcp"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "MCP server exposing a Waypoint graph to AI agents"
 
 [dependencies]

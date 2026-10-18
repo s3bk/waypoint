@@ -100,3 +100,7 @@ The live instance is https://waypoint.qdat.net. `scripts/deploy.sh` builds, uplo
 `DEPLOY.local.md` in the repo root, which is kept out of git on purpose; ask the
 maintainer if you do not have it. Agents: see `/llms.txt` and `/openapi.json` on
 the running server.
+
+## License
+
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option. Unless you state otherwise, any contribution you submit is dual licensed as above, with no additional terms.
