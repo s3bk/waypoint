@@ -59,6 +59,7 @@ All sizes are the bounding box in px (nodes are 160 x 56).
 | 4c | + tighter, then looser, spacing | see below | "too dense" at 18 px gaps; fine around 40 px |
 | 4d | + edge-text rules | 2200 x 1261 (stretched) | text fits, no label covered |
 | 4e | + compaction by annealing | 1491 x 1151, mean link 259, 18 backward | "very good, now just a few overlapping edge texts" |
+| 4f | + unified search (all rules, one objective) | 1302 x 1183, mean link 273, zero defects; applied stretched 1.2x | current |
 
 ### Force-directed core (used by 3 and 4)
 
@@ -117,18 +118,35 @@ an obstacle: the box shrunk by a third of its width/height on every side (`CX = 
   constrained search removed both. Label-label overlaps (10 in the "very good" layout) were not yet
   all removed.
 
-## Open problem when this was written
+## Solved: the combined search
 
-Starting from the 1491 x 1151 layout (10 overlapping label pairs), a search that adds label-label
-overlap as a defect fixes the overlaps but then leaves either 1 link with no room for its text or 1
-link cutting deeper than a third into a node; separate runs trade one for the other. It needs one
-objective with all defects weighted together (not a fix-up loop for one defect type), and
-probably a longer or restarted anneal.
+`tools/layout-experiments/unified.py` runs one annealing over single-node moves with **one
+objective**: `1000 * defects + 0.5 * link length + 0.35 * distance to the centroid (y weighted 1.78)`,
+where a defect is any of: boxes closer than the margin (28 px; linked pairs also need `NEED` of
+visible link), a link through a node core, a link too short for its text, text under a node, text over
+text. Each move is a random step (10 to 260 px) of a node, drawn 85% of the time from the nodes
+involved in a current defect; temperature falls from about 60 to 0.5 in cycles of 3000 steps and is
+raised when no progress is made for a while (the "reheat" is what cleared the last defects); the best
+state seen (fewest defects, then smallest area, mildly preferring 16:9) is kept. Eight seeds run in
+parallel; ~9000 steps each.
+
+Result on the test graph: starting from the 1491 x 1151 layout with 10 defects, 5 of 8 seeds reached
+zero within 6000 steps; a second run from a zero-defect result shrank it to **1302 x 1183, mean link
+273 px, zero defects** (checked: 0 overlaps, 0 cores, 0 short links, 0 covered texts, 0 overlapping
+texts). Stretching x afterwards keeps zero defects up to at least 1.5x (checked 1.0 to 1.5 in steps of
+0.1). The layout on the production graph is that result stretched 1.2x: 1530 x 1183, aspect 1.29,
+mean link 306 px, 18 backward links (`tools/layout-experiments/synthline-layout.json`, top-left
+positions by node key order).
+
+Note on the aspect: on a 16:9 screen the height binds (about 1183 px tall needs about 0.8 zoom), so
+stretching wider does not make it fit better, it only lengthens links. The stretch is a taste knob.
+
+Why the earlier fix-up loops failed: each fixed one defect type and was blind to the others, so
+they traded one for another. Counting all defects in one objective and reheating when stuck fixed it.
 
 ## Next steps
 
-1. Get to zero of: overlaps, links through node cores, links without room for text, text under
-   nodes, text over text (one annealing objective, all rules; start from the clustered force result).
+1. (Done in Python, see above.) The pipeline is: clustered force, then the unified search, then a stretch.
 2. Port to Rust (`crates/layout/src/tidy.rs`): deterministic RNG (xorshift with fixed seeds), grid
    or spatial index for the pair tests (the Python is O(N^2 E)), a work budget that scales with N
    (the O(N^2) force step is fine to a few hundred nodes; fall back to the layered layout above ~800).
