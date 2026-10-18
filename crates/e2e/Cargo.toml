@@ -1,0 +1,14 @@
+[package]
+name = "waypoint-e2e"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Browser tests: they start a throwaway server, the Vite dev server and
+# chromedriver, and drive headless Chrome with WebDriver. `cargo test -p waypoint-e2e`.
+[dev-dependencies]
+thirtyfour = "0.37"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }
+tempfile = "3.27.0"

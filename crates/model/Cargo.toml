@@ -1,0 +1,12 @@
+[package]
+name = "waypoint-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+
+# Browser randomness for client-generated ids.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }

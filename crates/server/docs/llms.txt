@@ -1,0 +1,57 @@
+# Waypoint
+
+> A shared dependency graph of nodes ("A depends on B"). Humans edit it in the web UI; agents use the HTTP API below. Machine-readable spec: /openapi.json
+
+## Auth
+
+A graph has three keys: `wp_owner_...` (can also set the title), `wp_editor_...` (read and change), `wp_viewer_...` (read only). The viewer key is also the graph ID. Send the key as a bearer token:
+
+    Authorization: Bearer wp_editor_...
+
+or, if you cannot set headers, as `?key=wp_editor_...` on any request (URLs get logged, so prefer the header). Wrong key and unknown graph both give 401.
+
+Find the graph ID from your key:
+
+    curl -H "Authorization: Bearer $KEY" https://waypoint.qdat.net/api/session
+    # {"role":"editor","graph":"wp_viewer_...","exists":true,"keys":{...}}
+
+A new key set: `curl -X POST https://waypoint.qdat.net/api/graphs`. A graph exists once an editor first writes to it.
+
+## Read (viewer key or better)
+
+- GET /api/graphs/{graph}                          summary: title, node/link/conflict counts
+- GET /api/graphs/{graph}/nodes?q=text&limit=50    search by title or key ("#12")
+- GET /api/graphs/{graph}/nodes/{node}             one node with its links and note
+- GET /api/graphs/{graph}/nodes/{node}/neighbours?direction=both|dependencies|dependants&depth=1
+- GET /api/graphs/{graph}/conflicts                links set aside because they would close a cycle
+- GET /api/graphs/{graph}/dot                      Graphviz DOT text
+- GET /api/graphs/{graph}/positions                absolute node positions
+- GET /api/graphs/{graph}/log                      who changed what, oldest first
+
+A node reference is its key (`#12` or `12`), its UUID, or `$N` for the node created by op N (0-based) earlier in the same batch.
+
+## Write (editor key or better)
+
+POST /api/graphs/{graph}/apply takes a batch of ops, applied atomically (any failure changes nothing and the error names `op_index`). Optional header `X-Waypoint-Actor: name` labels who made the change.
+
+    curl -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+      -d '{"label":"add task","ops":[{"op":"create_node","title":"Write tests","depends_on":["#3"]}]}' \
+      https://waypoint.qdat.net/api/graphs/$GRAPH/apply
+    # {"results":[{...,"key":13}]}
+
+Ops (field `op`):
+- create_node {title, depends_on?: [ref], dependants?: [ref], x?, y?}
+- rename_node {node, title}
+- delete_node {node}              links through it are joined
+- link {from, to}                 from depends on to; refused if it closes a cycle
+- unlink {from, to}
+- move_node {node, x, y, with_subtree?}
+- set_note {node, body}           replace the note
+- append_note {node, text}        safer when others are editing
+
+- POST /api/graphs/{graph}/undo and /redo   undo or redo your own latest batch (409 if none)
+- PUT /api/graphs/{graph}/title {title}     owner key only
+
+## Errors
+
+JSON `{"error": "...", "docs": "/llms.txt"}`. 401 missing or wrong key, 403 key role too low, 422 an op failed.

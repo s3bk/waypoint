@@ -1,0 +1,10 @@
+[package]
+name = "waypoint-mcp"
+version.workspace = true
+edition.workspace = true
+description = "MCP server exposing a Waypoint graph to AI agents"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }

@@ -1,0 +1,750 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "Waypoint API",
+  "version": "1",
+  "description": "Shared dependency graph. Authenticate with a graph key as a bearer token, or ?key= on any request. Docs for agents: /llms.txt"
+ },
+ "paths": {
+  "/api/graphs": {
+   "post": {
+    "summary": "Generate a new set of owner/editor/viewer keys (no auth)",
+    "responses": {
+     "200": {
+      "description": "keys"
+     }
+    }
+   }
+  },
+  "/api/session": {
+   "get": {
+    "summary": "Role, graph ID and shareable keys for the presented key",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{role, graph, exists, keys}"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}": {
+   "get": {
+    "summary": "Summary: title and node/link/conflict counts",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/nodes": {
+   "get": {
+    "summary": "Search nodes by title or key",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/nodes/{node}": {
+   "get": {
+    "summary": "One node with links and note",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "node",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/nodes/{node}/neighbours": {
+   "get": {
+    "summary": "Nodes reachable from a node",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "node",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "direction",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "both",
+        "dependencies",
+        "dependants"
+       ]
+      }
+     },
+     {
+      "name": "depth",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/conflicts": {
+   "get": {
+    "summary": "Links set aside because they would close a cycle",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/dot": {
+   "get": {
+    "summary": "Graphviz DOT text",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "text/vnd.graphviz": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/positions": {
+   "get": {
+    "summary": "Absolute node positions",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/log": {
+   "get": {
+    "summary": "Change log, oldest first",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/apply": {
+   "post": {
+    "summary": "Apply a batch of ops atomically (editor key)",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "X-Waypoint-Actor",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "description": "key role too low"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "ops"
+        ],
+        "properties": {
+         "label": {
+          "type": "string"
+         },
+         "ops": {
+          "type": "array",
+          "items": {
+           "oneOf": [
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "title"
+             ],
+             "properties": {
+              "op": {
+               "const": "create_node"
+              },
+              "title": {
+               "type": "string"
+              },
+              "depends_on": {
+               "type": "array",
+               "items": {
+                "type": "string",
+                "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+               }
+              },
+              "dependants": {
+               "type": "array",
+               "items": {
+                "type": "string",
+                "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+               }
+              },
+              "x": {
+               "type": "integer"
+              },
+              "y": {
+               "type": "integer"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "node",
+              "title"
+             ],
+             "properties": {
+              "op": {
+               "const": "rename_node"
+              },
+              "node": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "title": {
+               "type": "string"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "node"
+             ],
+             "properties": {
+              "op": {
+               "const": "delete_node"
+              },
+              "node": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "from",
+              "to"
+             ],
+             "properties": {
+              "op": {
+               "const": "link"
+              },
+              "from": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "to": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "from",
+              "to"
+             ],
+             "properties": {
+              "op": {
+               "const": "unlink"
+              },
+              "from": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "to": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "node",
+              "x",
+              "y"
+             ],
+             "properties": {
+              "op": {
+               "const": "move_node"
+              },
+              "node": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "x": {
+               "type": "integer"
+              },
+              "y": {
+               "type": "integer"
+              },
+              "with_subtree": {
+               "type": "boolean"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "node",
+              "body"
+             ],
+             "properties": {
+              "op": {
+               "const": "set_note"
+              },
+              "node": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "body": {
+               "type": "string"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "node",
+              "text"
+             ],
+             "properties": {
+              "op": {
+               "const": "append_note"
+              },
+              "node": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "text": {
+               "type": "string"
+              }
+             }
+            }
+           ],
+           "discriminator": {
+            "propertyName": "op"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/undo": {
+   "post": {
+    "summary": "Undo your latest batch (editor key); 409 if none",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "X-Waypoint-Actor",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "description": "key role too low"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/redo": {
+   "post": {
+    "summary": "Redo (editor key); 409 if none",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "X-Waypoint-Actor",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "description": "key role too low"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/title": {
+   "put": {
+    "summary": "Set the graph title (owner key)",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "X-Waypoint-Actor",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "description": "key role too low"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "title"
+        ],
+        "properties": {
+         "title": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "bearer": {
+    "type": "http",
+    "scheme": "bearer",
+    "description": "wp_owner_/wp_editor_/wp_viewer_ key; also accepted as ?key="
+   }
+  },
+  "responses": {
+   "Unauthorized": {
+    "description": "missing or wrong key",
+    "content": {
+     "application/json": {
+      "schema": {
+       "type": "object",
+       "properties": {
+        "error": {
+         "type": "string"
+        },
+        "docs": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}
