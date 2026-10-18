@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["mcp", "ai-agents", "dependency-graph", "waypoint"]
+categories = ["command-line-utilities", "development-tools"]
 description = "MCP server exposing a Waypoint graph to AI agents"
 
 [dependencies]
