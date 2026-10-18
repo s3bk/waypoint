@@ -8,18 +8,17 @@ import init, {
 } from "./wasm/waypoint_layout.js";
 import { createGraph, getAccess, linkFor as shareLink, rememberGraph, setGraphTitle, type Access, type Role } from "./access";
 import { Camera } from "./camera";
-import { drawEdge, outline as shapeOutline, strokePath } from "./draw";
+import { drawEdge, exitPoint, isSharp, outline as shapeOutline, strokePath } from "./draw";
+import { exportPng, exportSvg, fileName } from "./export";
+import { NODE_H, NODE_W, type Scene } from "./scene";
+import { LINE_HEIGHT, layoutTitle } from "./wrap";
 import { Graph, type Place, type Vec2 } from "./graph";
 import { setupMargin } from "./margin";
-import { setupTypes } from "./types";
-import { hexNum } from "./style";
+import { edgeSwatch, setupTypes } from "./types";
+import { hexNum, readableOn } from "./style";
 import { applyTheme } from "./theme";
 
 const NEW_TITLE = "New node";
-
-// Must match waypoint_model::NODE_WIDTH / NODE_HEIGHT.
-const NODE_W = 160;
-const NODE_H = 56;
 
 const EDGE_SELECTED = 0xffb454;
 const EDGE_CONFLICTED = 0xe5484d;
@@ -34,18 +33,6 @@ const HANDLE_R = 6;
 const HANDLE_HIT = 11;
 const EDGE_HIT = 8;
 
-/** Point where the ray from the centre of a node box toward `target` leaves the box. */
-function boxExit(center: Vec2, target: Vec2): Vec2 {
-  const dx = target.x - center.x;
-  const dy = target.y - center.y;
-  if (dx === 0 && dy === 0) return center;
-  const t = Math.min(
-    dx === 0 ? Infinity : NODE_W / 2 / Math.abs(dx),
-    dy === 0 ? Infinity : NODE_H / 2 / Math.abs(dy),
-  );
-  return { x: center.x + dx * t, y: center.y + dy * t };
-}
-
 /**
  * Angle to draw text along the segment `a`→`b`: the segment's own angle, turned
  * half a revolution when needed so the text's up never points downwards
@@ -55,6 +42,11 @@ function upright(a: Vec2, b: Vec2): number {
   const angle = Math.atan2(b.y - a.y, b.x - a.x);
   return Math.cos(angle) < 0 ? angle + Math.PI : angle;
 }
+
+const FONT = "system-ui, sans-serif";
+const EMOJI_FONT = `${FONT}, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"`;
+/** How long the hint at the bottom stays when nothing is happening. */
+const HINT_IDLE_MS = 5000;
 
 const EDGE_LABEL_GAP = 8; // from the line to the text's centre, along the text's up
 
@@ -260,6 +252,11 @@ async function main() {
   /** A drag that was dropped but whose move has not come back from the server yet; kept on screen so the node does not jump back and forth. */
   let dropped: Drag | null = null;
   let connecting: Connecting | null = null;
+  /** A link the user has drawn and is choosing the type of (the picker is open). */
+  let pendingLink: { from: string; to: string } | null = null;
+  let picker: HTMLElement | null = null;
+  /** What is on the canvas, as of the last draw; the export reads it. */
+  let lastScene: Scene = { background: "", nodes: [], edges: [] };
   let shiftDown = false;
   let panning = false;
   // View state, per user: not shared.
@@ -308,7 +305,7 @@ async function main() {
   /** `#12 title`, for messages. */
   function nameOf(id: string): string {
     const k = graph.key(id);
-    return `${k === undefined ? "" : `#${k} `}${graph.title(id) || "untitled"}`;
+    return `${k === undefined ? "" : `#${k} `}${graph.title(id).replace(/\s*\n\s*/g, " ") || "untitled"}`;
   }
 
   /** What linking the connection's node to `target` would mean, and whether it is allowed. */
@@ -320,13 +317,29 @@ async function main() {
     return { from, to };
   }
 
-  /** At most two lines, ending in an ellipsis. Cutting the text is much cheaper to draw than masking each label; the full title is in the editor. */
-  function clipTitle(text: string, style: TextStyle): string {
-    const lines = CanvasTextMetrics.measureText(text, style).lines;
-    if (lines.length <= 2) return text;
-    let second = lines[1].trimEnd();
-    while (second && CanvasTextMetrics.measureText(`${second}…`, style).lines.length > 1) second = second.slice(0, -1);
-    return `${lines[0]}\n${second}…`;
+  /** Text widths, measured once: breaking a title into lines measures many candidate lines. */
+  const measureStyle = new TextStyle({ fontSize: 14, fontFamily: FONT });
+  const widths = new Map<string, number>();
+  const measure = (text: string): number => {
+    let w = widths.get(text);
+    if (w === undefined) {
+      if (widths.size > 20000) widths.clear();
+      w = CanvasTextMetrics.measureText(text, measureStyle).width;
+      widths.set(text, w);
+    }
+    return w;
+  };
+  const brokenTitles = new Map<string, string[]>();
+  /** A title broken into lines that fit a node of this shape (manual line breaks kept); the full title is in the editor. */
+  function titleLines(title: string, shape: string): string[] {
+    const k = `${shape}\0${title}`;
+    let lines = brokenTitles.get(k);
+    if (!lines) {
+      if (brokenTitles.size > 2000) brokenTitles.clear();
+      lines = layoutTitle(title, shape, NODE_W, NODE_H, measure);
+      brokenTitles.set(k, lines);
+    }
+    return lines;
   }
 
   function drawHandles() {
@@ -359,6 +372,14 @@ async function main() {
 
     const centers = new Map<string, Vec2>();
     for (const [id, p] of Object.entries(positions)) centers.set(id, { x: p.x + NODE_W / 2, y: p.y + NODE_H / 2 });
+    // Where a link meets a node is on the node's real outline (an ellipse or rhombus does not reach its box corners).
+    const outlines = new Map<string, Vec2[]>();
+    for (const [id, p] of Object.entries(positions)) {
+      const t = reg.nodeType(id);
+      outlines.set(id, shapeOutline(t.shape, t.corners, NODE_W, NODE_H).map((q) => ({ x: q.x + p.x, y: q.y + p.y })));
+    }
+    const exitOf = (id: string, toward: Vec2): Vec2 => exitPoint(outlines.get(id)!, centers.get(id)!, toward);
+    const scene: Scene = { background: reg.background, nodes: [], edges: [] };
 
     // Edges first, so nodes cover the line ends.
     const edges = new Graphics();
@@ -368,18 +389,20 @@ async function main() {
       const from = centers.get(e.from);
       const to = centers.get(e.to);
       if (!from || !to) continue;
-      const a = boxExit(from, to);
-      const b = boxExit(to, from);
+      const a = exitOf(e.from, to);
+      const b = exitOf(e.to, from);
       edgeSegments.push({ key: e.key, a, b });
       const type = reg.edgeType(e.type);
       if (e.key === selectedEdge) drawEdge(edges, a, b, type, { color: EDGE_SELECTED, width: Math.max(3.5, type.width + 1.5) });
       else if (e.conflicted) drawEdge(edges, a, b, type, { color: EDGE_CONFLICTED, style: "dashed" });
       else drawEdge(edges, a, b, type);
 
+      const sceneEdge = { a, b, type, conflicted: e.conflicted, label: null as { x: number; y: number; angle: number } | null };
+      scene.edges.push(sceneEdge);
       if (!type.label) continue; // an empty label draws nothing
       const label = new Text({
         text: type.label,
-        style: { fill: e.conflicted ? EDGE_CONFLICTED : hexNum(type.text_color), fontSize: 11, fontFamily: "system-ui, sans-serif" },
+        style: { fill: e.conflicted ? EDGE_CONFLICTED : hexNum(type.text_color), fontSize: 11, fontFamily: FONT },
         resolution: labelResolution(),
       });
       if (Math.hypot(b.x - a.x, b.y - a.y) < label.width + 2 * ARROW_LEN + 8) {
@@ -394,6 +417,7 @@ async function main() {
         (a.x + b.x) / 2 + Math.sin(angle) * EDGE_LABEL_GAP,
         (a.y + b.y) / 2 - Math.cos(angle) * EDGE_LABEL_GAP,
       );
+      sceneEdge.label = { x: label.position.x, y: label.position.y, angle };
       edgeLabels.push(label);
       labels.push(label);
     }
@@ -412,6 +436,10 @@ async function main() {
       if (target && target !== c.node) linkTarget = { id: target, problem: linkFor(c, target).problem };
       const color = linkTarget ? (linkTarget.problem ? BAD : OK) : ACCENT;
       arrow(rubber, start, pointer, color);
+    } else if (pendingLink) {
+      // The link is drawn and waiting for its type to be picked.
+      const [f, t] = [centers.get(pendingLink.from), centers.get(pendingLink.to)];
+      if (f && t) arrow(rubber, exitOf(pendingLink.from, t), exitOf(pendingLink.to, f), OK);
     }
 
     for (const [id, p] of Object.entries(positions)) {
@@ -428,57 +456,54 @@ async function main() {
             ? { width: 2, color: SELECTED }
             : null;
       const shape = shapeOutline(type.shape, type.corners, NODE_W, NODE_H);
+      const join = isSharp(type.shape, type.corners) ? "miter" : "round";
       const body = new Graphics().poly(shape).fill(hexNum(type.bg));
-      if (state) strokePath(body, shape, true, state.color, state.width, "solid");
-      else strokePath(body, shape, true, hexNum(type.border), type.border_width, "solid");
+      if (state) strokePath(body, shape, true, state.color, state.width, "solid", 1, join);
+      else strokePath(body, shape, true, hexNum(type.border), type.border_width, "solid", 1, join);
       node.addChild(body);
 
+      // The title, centred, already broken into lines that fit this shape.
       const title = graph.title(id);
-      const titleStyle = new TextStyle({
-        fill: hexNum(type.fg),
-        fontSize: 14,
-        lineHeight: 17,
-        fontFamily: "system-ui, sans-serif",
-        wordWrap: true,
-        wordWrapWidth: NODE_W - 24,
-        breakWords: true,
-      });
-      const label = new Text({ text: clipTitle(title || "untitled", titleStyle), style: titleStyle, resolution: labelResolution() });
+      const lines = title ? titleLines(title, type.shape) : ["untitled"];
+      const titleStyle = new TextStyle({ fill: hexNum(type.fg), fontSize: 14, lineHeight: LINE_HEIGHT, fontFamily: FONT, align: "center" });
+      const label = new Text({ text: lines.join("\n"), style: titleStyle, resolution: labelResolution() });
       label.alpha = title ? 1 : 0.4;
-      const key = graph.key(id);
-      label.position.set(12, NODE_H / 2 - Math.min(label.height, 34) / 2);
+      label.anchor.set(0.5);
+      label.position.set(NODE_W / 2, NODE_H / 2);
       node.addChild(label);
       labels.push(label);
+      const key = graph.key(id);
+      const hasNote = graph.note(id).trim() !== "";
+      scene.nodes.push({ id, x: p.x, y: p.y, type, lines, untitled: !title, key, hasNote });
       if (key !== undefined) {
         // The short key (#12): how people and agents refer to this node. It never changes, even on rename.
+        // It sits just below the node (a two-line title can fill the corner, and the corners of most shapes are empty canvas),
+        // so it is coloured for the canvas, not for the node.
         const badge = new Text({
           text: `#${key}`,
-          style: { fill: hexNum(type.fg), fontSize: 10, fontFamily: "system-ui, sans-serif" },
+          style: { fill: hexNum(readableOn(reg.background)), fontSize: 10, fontFamily: FONT },
           resolution: labelResolution(),
         });
         badge.alpha = 0.7;
         badge.anchor.set(1, 1);
-        badge.position.set(NODE_W - 8, NODE_H - 4);
+        badge.position.set(NODE_W, NODE_H + 12);
         node.addChild(badge);
         labels.push(badge);
       }
-      if (graph.note(id).trim()) {
-        // The note lives in the margin; this shows that there is one.
-        const count = new Text({
-          text: "✎",
-          style: { fill: hexNum(type.fg), fontSize: 10, fontFamily: "system-ui, sans-serif" },
-          resolution: labelResolution(),
-        });
-        count.alpha = 0.7;
-        count.anchor.set(0, 1);
-        count.position.set(12, NODE_H - 4);
-        node.addChild(count);
-        labels.push(count);
+      if (hasNote) {
+        // The note lives in the margin; this shows that there is one. It hangs off the node's top-left corner, clear of the title.
+        const icon = new Text({ text: "🗒", style: { fontSize: 12, fontFamily: EMOJI_FONT }, resolution: labelResolution() });
+        icon.alpha = 0.85;
+        icon.anchor.set(0, 1);
+        icon.position.set(2, -3);
+        node.addChild(icon);
+        labels.push(icon);
       }
 
       world.addChild(node);
     }
     world.addChild(rubber);
+    lastScene = scene;
     handles = new Graphics();
     world.addChild(handles);
     drawHandles();
@@ -493,6 +518,20 @@ async function main() {
 
   let margin: ReturnType<typeof setupMargin> | undefined;
   const hint = document.getElementById("hint")!;
+  // The hint at the bottom is for someone who is doing something: it fades after a few idle seconds and returns on the next action.
+  hint.style.transition = "opacity 0.4s";
+  let hintTimer = 0;
+  function wake() {
+    hint.style.opacity = "";
+    window.clearTimeout(hintTimer);
+    hintTimer = window.setTimeout(fadeHint, HINT_IDLE_MS);
+  }
+  function fadeHint() {
+    if (localDrag || connecting || picker) return wake(); // holding still in the middle of an action is not idle
+    hint.style.opacity = "0";
+  }
+  for (const type of ["pointermove", "pointerdown", "keydown", "wheel", "touchstart"]) window.addEventListener(type, wake, { passive: true, capture: true });
+  wake();
   function updateHint(movingCount: number, linkTarget: { id: string; problem?: string } | null) {
     hint.classList.toggle("active", localDrag !== null || connecting !== null);
     if (connecting) {
@@ -513,6 +552,8 @@ async function main() {
       } else {
         hint.innerHTML = "Moving <b>only this node</b> · hold <b>Shift</b> to take what it depends on along";
       }
+    } else if (editing) {
+      hint.innerHTML = "<b>Enter</b> saves · <b>Shift+Enter</b> starts a new line · <b>Esc</b> cancels";
     } else if (!canEdit) {
       hint.innerHTML = "<b>Read-only</b> (viewer key) · drag the canvas to pan, scroll to zoom";
     } else if (selectedEdge && graph.edges().some((e) => e.key === selectedEdge && e.conflicted)) {
@@ -528,11 +569,14 @@ async function main() {
     }
   }
 
-  function applyCamera() {
+  /** `settle` false skips re-rasterizing the text for the new zoom (slow): done once zooming stops. */
+  function applyCamera(settle = true) {
     world.position.set(-camera.x * camera.zoom, -camera.y * camera.zoom);
     world.scale.set(camera.zoom);
-    const res = labelResolution();
-    for (const l of labels) if (l.resolution !== res) l.resolution = res;
+    if (settle) {
+      const res = labelResolution();
+      for (const l of labels) if (l.resolution !== res) l.resolution = res;
+    }
     positionEditor();
     app.render();
   }
@@ -550,7 +594,9 @@ async function main() {
       width: `${NODE_W * z}px`,
       height: `${NODE_H * z}px`,
       fontSize: `${14 * z}px`,
-      padding: `${(NODE_H / 2 - 17) * z}px ${12 * z}px`,
+      lineHeight: `${LINE_HEIGHT * z}px`,
+      textAlign: "center",
+      padding: `${(NODE_H / 2 - LINE_HEIGHT) * z}px ${12 * z}px`,
       borderRadius: `${8 * z}px`,
     });
   }
@@ -634,7 +680,13 @@ async function main() {
     if (!editing) return;
     const { id, original } = editing;
     endEdit();
-    const title = editor.value.replace(/\s+/g, " ").trim().slice(0, 200);
+    // Line breaks the person typed (Shift+Enter) stay; spaces are tidied within each line, empty lines dropped.
+    const title = editor.value
+      .split("\n")
+      .map((l) => l.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 200);
     if (title && title !== original) void act([{ op: "rename_node", node: id, title }], "rename");
     else render();
   }
@@ -745,9 +797,11 @@ async function main() {
 
   function removeSelectedEdge() {
     if (!selectedEdge) return;
-    const pair = graph.edgePairs(selectedEdge)[0];
+    // The key is "from>to". (`edgePairs(key)` would give every link except this one.)
+    const [from, to] = selectedEdge.split(">");
+    const exists = graph.edges().some((e) => e.from === from && e.to === to);
     selectedEdge = null;
-    if (pair) void act([{ op: "unlink", from: pair[0], to: pair[1] }], "remove link");
+    if (from && to && exists) void act([{ op: "unlink", from, to }], "remove link");
     else render();
   }
 
@@ -764,7 +818,7 @@ async function main() {
       const target = nodeAt(w);
       if (target && target !== c.node) {
         const link = linkFor(c, target);
-        if (!link.problem) void act([{ op: "link", from: link.from, to: link.to }], "link");
+        if (!link.problem) chooseEdgeType({ from: link.from, to: link.to }, { x: e.clientX, y: e.clientY });
         else render();
       } else if (!target && cameraDistance({ x: c.fromX, y: c.fromY }, w) > 24) {
         createNode(w, c.node); // dropped on empty canvas: a new node the start node depends on
@@ -823,6 +877,87 @@ async function main() {
       }
     }
   });
+
+  /** Close the edge type list without making the link. */
+  function closePicker() {
+    picker?.remove();
+    picker = null;
+    if (pendingLink) {
+      pendingLink = null;
+      render();
+    }
+  }
+
+  /**
+   * A new link needs a type: list the edge types at the pointer and make the link
+   * with the one picked. (With only one type there is nothing to pick.)
+   */
+  function chooseEdgeType(link: { from: string; to: string }, at: { x: number; y: number }) {
+    const reg = graph.registry();
+    if (reg.edgeTypes.length <= 1) {
+      void act([{ op: "link", from: link.from, to: link.to }], "link");
+      return;
+    }
+    closePicker();
+    pendingLink = link;
+    const box = document.createElement("div");
+    box.className = "edge-picker";
+    box.setAttribute("role", "menu");
+    box.style.cssText =
+      "position:fixed;z-index:50;min-width:200px;max-width:320px;max-height:70vh;overflow:auto;padding:6px;border-radius:8px;" +
+      "background:var(--panel);color:var(--fg);border:1px solid var(--line);box-shadow:0 6px 24px rgba(0,0,0,.35);font:13px system-ui,sans-serif";
+    const head = document.createElement("div");
+    head.textContent = `${nameOf(link.from)} depends on ${nameOf(link.to)}: which kind of link?`;
+    head.style.cssText = "padding:2px 8px 6px;color:var(--muted);font-size:12px";
+    box.append(head);
+    const buttons: HTMLButtonElement[] = [];
+    for (const t of reg.edgeTypes) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.style.cssText = "display:flex;align-items:center;gap:8px;width:100%;padding:4px 8px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer";
+      const name = document.createElement("span");
+      name.textContent = t.name;
+      b.append(edgeSwatch(t, reg.background), name);
+      b.onmouseenter = () => b.focus();
+      b.onclick = () => {
+        const l = pendingLink;
+        box.remove();
+        picker = null;
+        pendingLink = null;
+        if (l) void act([{ op: "link", from: l.from, to: l.to, edge_type: t.name }], "link");
+        render();
+      };
+      buttons.push(b);
+      box.append(b);
+    }
+    box.addEventListener("keydown", (ev) => {
+      ev.stopPropagation(); // the canvas shortcuts must not see these keys
+      const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closePicker();
+      } else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        buttons[(i + (ev.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length]!.focus();
+      }
+    });
+    document.body.append(box);
+    picker = box;
+    const r = box.getBoundingClientRect();
+    box.style.left = `${Math.max(8, Math.min(at.x + 8, window.innerWidth - r.width - 8))}px`;
+    box.style.top = `${Math.max(8, Math.min(at.y + 8, window.innerHeight - r.height - 8))}px`;
+    buttons[0]!.focus();
+    render();
+  }
+  // A press anywhere outside the list closes it.
+  window.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (picker && !(e.target instanceof Node && picker.contains(e.target))) closePicker();
+    },
+    true,
+  );
 
   /**
    * Add a node centred at `at`, with the layout making room for it, and open
@@ -887,15 +1022,32 @@ async function main() {
   window.addEventListener("keydown", onKey);
   window.addEventListener("keyup", onKey);
 
+  // Zoom. Firefox sends a burst of wheel events per swipe; redrawing for each one backs the events up behind slow
+  // frames, and the zoom then keeps running long after the swipe ended. So events only add up what they asked for
+  // (by how far the wheel turned, not how many events came), and one frame applies the sum.
+  let wheelZoom = 0; // log of the zoom factor asked for since the last frame
+  let wheelAt: Vec2 = { x: 0, y: 0 };
+  let wheelFrame = 0;
+  let zoomSettle = 0;
+  function applyWheel() {
+    wheelFrame = 0;
+    const ask = Math.max(-0.4, Math.min(0.4, wheelZoom));
+    wheelZoom = 0;
+    camera.zoomAt(wheelAt, Math.exp(ask));
+    drawHandles(); // handle sizes depend on zoom
+    applyCamera(false);
+    // Sharpen the text once the zoom has stopped.
+    window.clearTimeout(zoomSettle);
+    zoomSettle = window.setTimeout(() => applyCamera(true), 150);
+  }
   app.canvas.addEventListener(
     "wheel",
     (e) => {
       e.preventDefault();
-      // Zoom by how far the wheel turned, not by how many events came: a trackpad sends dozens per swipe.
       const pixels = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
-      camera.zoomAt({ x: e.offsetX, y: e.offsetY }, Math.exp(-Math.max(-120, Math.min(120, pixels)) * 0.001));
-      drawHandles(); // handle sizes depend on zoom
-      applyCamera();
+      wheelZoom -= Math.max(-120, Math.min(120, pixels)) * 0.001;
+      wheelAt = { x: e.offsetX, y: e.offsetY };
+      if (!wheelFrame) wheelFrame = requestAnimationFrame(applyWheel);
     },
     { passive: false },
   );
@@ -932,6 +1084,28 @@ async function main() {
       return from && to ? { from, to } : null;
     },
   });
+  // Export buttons next to "Types", styled like it. They save what is on the canvas, cropped to the graph.
+  const typesButton = document.getElementById("types-button")!;
+  const exportButton = (label: string, id: string, run: () => Promise<boolean> | boolean) => {
+    const b = document.createElement("button");
+    b.id = id;
+    b.className = typesButton.className.replace(/\bon\b/, "").trim();
+    b.textContent = label;
+    b.onclick = async () => {
+      try {
+        if (!(await run())) hint.textContent = "Nothing to export yet: the graph is empty";
+      } catch (err) {
+        hint.textContent = `Export failed: ${String(err)}`;
+      }
+      wake();
+    };
+    return b;
+  };
+  typesButton.after(
+    exportButton("Export SVG", "export-svg-button", () => exportSvg(lastScene, fileName(graph.graphTitle(), "svg"))),
+    exportButton("Export PNG", "export-png-button", () => exportPng(lastScene, fileName(graph.graphTitle(), "png"))),
+  );
+
   graph.doc.on("update", render);
   awareness.on("change", render);
   render();

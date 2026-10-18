@@ -68,7 +68,7 @@ function nodeSwatch(t: NodeType): HTMLElement {
   return s;
 }
 
-function edgeSwatch(t: EdgeType, background: string): HTMLElement {
+export function edgeSwatch(t: EdgeType, background: string): HTMLElement {
   const s = el("span", "swatch edge");
   s.style.background = background;
   const ns = "http://www.w3.org/2000/svg";
@@ -309,18 +309,24 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
     // Canvas colour.
     const bg = el("div", "section");
     bg.append(el("h4", undefined, "Canvas"));
+    // Laid out like the type rows below, so its button lines up with theirs on the right.
+    const bgRow = el("div", "type");
     const bgInput = el("input");
     bgInput.type = "color";
     bgInput.value = reg.background;
     bgInput.disabled = !hooks.isOwner;
+    const bgName = el("span", "name", reg.background);
+    bgName.style.flex = "1";
     const bgSet = el("button", undefined, "Set canvas colour");
+    bgSet.style.marginLeft = "auto";
     bgSet.disabled = !hooks.isOwner;
     bgSet.onclick = async () => {
       message = (await hooks.setBackground(bgInput.value)) ?? "";
       shown = "";
       update();
     };
-    bg.append(bgInput, bgSet, el("small", "hint", hooks.isOwner ? "Edge colours that no longer show are recoloured." : "Only the owner can change it."));
+    bgRow.append(bgInput, bgName, bgSet);
+    bg.append(bgRow, el("small", "hint", hooks.isOwner ? "Edge colours that no longer show are recoloured." : "Only the owner can change it."));
     panel.append(bg);
 
     const usedNode = node ? reg.nodeType(node).id : null;

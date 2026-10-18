@@ -44,7 +44,14 @@ function roundPolygon(pts: Vec2[], r: number): Vec2[] {
   return out;
 }
 
-/** The closed outline of a node shape in a `w` by `h` box; `corners` ("round" or "square") applies to rect, hexagon and rhombus. */
+/** Whether a node shape has sharp corners (so its border should be mitred, not rounded). The rhombus is always sharp. */
+export function isSharp(shape: string, corners: string): boolean {
+  if (shape === "rhombus") return true;
+  if (shape === "pill" || shape === "ellipse") return false;
+  return corners === "square";
+}
+
+/** The closed outline of a node shape in a `w` by `h` box; `corners` ("round" or "square") applies to rect and hexagon (a rhombus is always sharp). */
 export function outline(shape: string, corners: string, w: number, h: number): Vec2[] {
   let pts: Vec2[];
   switch (shape) {
@@ -64,15 +71,15 @@ export function outline(shape: string, corners: string, w: number, h: number): V
     default:
       pts = [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }];
   }
-  return corners === "round" ? roundPolygon(pts, 8) : pts;
+  return isSharp(shape, corners) ? pts : roundPolygon(pts, 8);
 }
 
 /** Stroke a polyline (closed or not) as one path, solid, dashed or dotted. */
-export function strokePath(g: Graphics, pts: Vec2[], closed: boolean, color: number, width: number, style: string, alpha = 1) {
+export function strokePath(g: Graphics, pts: Vec2[], closed: boolean, color: number, width: number, style: string, alpha = 1, join: "round" | "miter" = "round") {
   if (width <= 0 || pts.length < 2) return;
   const path = closed ? [...pts, pts[0]!] : pts;
   if (style === "solid") {
-    g.poly(closed ? pts : path, closed).stroke({ width, color, alpha, join: "round", cap: "round" });
+    g.poly(closed ? pts : path, closed).stroke({ width, color, alpha, join, cap: join === "miter" ? "butt" : "round", miterLimit: 10 });
     return;
   }
   // Dotted: round dots one width long with two widths between; dashed: longer strokes.
@@ -99,8 +106,26 @@ export function strokePath(g: Graphics, pts: Vec2[], closed: boolean, color: num
   g.stroke({ width, color, alpha, cap: "round" });
 }
 
+/** Where the ray from `center` toward `target` leaves the closed outline `pts` (a convex shape around `center`). */
+export function exitPoint(pts: Vec2[], center: Vec2, target: Vec2): Vec2 {
+  const [dx, dy] = [target.x - center.x, target.y - center.y];
+  if (dx === 0 && dy === 0) return center;
+  let best = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const [a, b] = [pts[i]!, pts[(i + 1) % pts.length]!];
+    const [ex, ey] = [b.x - a.x, b.y - a.y];
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-9) continue; // parallel to this side
+    const [rx, ry] = [a.x - center.x, a.y - center.y];
+    const t = (rx * ey - ry * ex) / den; // along the ray
+    const u = (rx * dy - ry * dx) / den; // along the side
+    if (t > 1e-9 && u >= -1e-9 && u <= 1 + 1e-9 && t < best) best = t;
+  }
+  return best === Infinity ? center : { x: center.x + dx * best, y: center.y + dy * best };
+}
+
 /** How far the line stops short of its end so the head sits on the node edge. */
-function inset(kind: string, width: number): number {
+export function inset(kind: string, width: number): number {
   if (kind === "arrow") return 8 + width * 1.5;
   if (kind === "dot") return 2 * (3 + width * 0.8);
   return 0;
