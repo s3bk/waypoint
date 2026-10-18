@@ -97,16 +97,17 @@ https://waypoint.qdat.net.
 
 2. Register it with your MCP client.
 
-   **Claude Code**, for the current user in every project:
+   **Claude Code**, once for you, available in every project (the tool is global; keys are
+   per project and given in the conversation, see step 4):
 
    ```sh
-   claude mcp add waypoint --env WAYPOINT_URL=https://waypoint.qdat.net -- waypoint-mcp
+   claude mcp add --scope user waypoint --env WAYPOINT_URL=https://waypoint.qdat.net -- waypoint-mcp
    ```
 
-   Add `--scope project` to write it to the project's `.mcp.json` (shareable; it holds no
-   key) or `--scope local` for just this project and user. Leave out `--env WAYPOINT_URL=…`
-   for a server on `http://127.0.0.1:3000`. If `waypoint-mcp` is not on `PATH`, give
-   the absolute path after `--`.
+   Without `--scope`, Claude Code registers it for the current project only (`--scope local`).
+   `--scope project` writes it to the project's `.mcp.json` instead (shareable; it holds no
+   key). Leave out `--env WAYPOINT_URL=…` for a server on `http://127.0.0.1:3000`. If
+   `waypoint-mcp` is not on `PATH`, give the absolute path after `--`.
 
    **Any other client** that reads JSON config:
 
@@ -123,7 +124,8 @@ https://waypoint.qdat.net.
 4. Connect to a graph. Ask the user for a key or share link (the Share panel in the
    web UI makes them), then call the `connect` tool with it. Use an **editor** key to
    let the agent change the graph, a **viewer** key to let it only look, and never
-   the owner key. After `connect`, the other tools work. If the tools answer "not
+   the owner key. A project can keep its key in its `CLAUDE.md` (an editor or viewer key only)
+   so the agent connects at the start of each session. After `connect`, the other tools work. If the tools answer "not
    connected", call `connect` first.
 
 To remove it: `claude mcp remove waypoint` (and `cargo uninstall waypoint-mcp`).
