@@ -160,6 +160,7 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
 
 ## Next steps (proposed order)
 
+0. Layout: build the clustered force-directed layout, the `tidy` op and the label-fit rules into the product. Findings, algorithms and open problems are in [LAYOUT.md](LAYOUT.md); experiment scripts in `tools/layout-experiments/`.
 1. Edge-type registry, kinds and statuses, sub-graph frames. Still open from
    notes: hover-highlight between margin and node, per-user inline/hidden modes,
    character-level edits from the UI (it sends the whole text).
