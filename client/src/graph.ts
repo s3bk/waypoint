@@ -4,6 +4,17 @@
 
 import * as Y from "yjs";
 
+import {
+  DEFAULT_BACKGROUND,
+  DEFAULT_EDGE_TYPE,
+  DEFAULT_NODE_TYPE,
+  type EdgeType,
+  type NodeType,
+  normalizeColor,
+  readEdgeTypes,
+  readNodeTypes,
+} from "./style";
+
 export interface Vec2 {
   x: number;
   y: number;
@@ -32,6 +43,9 @@ export class Graph {
   readonly edgeMap = this.doc.getMap<Y.Map<unknown>>("edges");
   /** Document-level settings; `title` is written only by the server, on the owner's request. */
   readonly meta = this.doc.getMap<string>("meta");
+  /** Type registries: `id -> Y.Map` of fields; the server writes them (see style.ts). */
+  readonly nodeTypeMap = this.doc.getMap<Y.Map<unknown>>("node_types");
+  readonly edgeTypeMap = this.doc.getMap<Y.Map<unknown>>("edge_types");
   /** Viewers watch only: the server would ignore their edits, so they are never made. */
   readOnly = false;
 
@@ -162,6 +176,32 @@ export class Graph {
       if (!byPair.has(key) || entryKey === key) byPair.set(key, { key, from: from as string, to: to as string, type: String(e.get("type")), conflicted: e.get("conflicted") === true });
     });
     return [...byPair.values()];
+  }
+
+  /** The canvas colour, set by the owner. */
+  background(): string {
+    return normalizeColor(this.meta.get("background")) ?? DEFAULT_BACKGROUND;
+  }
+
+  /** The registries as they stand, with lookups that fall back to the default type. Read once per draw. */
+  registry() {
+    const fields = (m: Y.Map<Y.Map<unknown>>) => [...m.entries()].map(([id, e]) => [id, new Map(e.entries())] as [string, Map<string, unknown>]);
+    const background = this.background();
+    const nodeTypes = readNodeTypes(fields(this.nodeTypeMap));
+    const edgeTypes = readEdgeTypes(fields(this.edgeTypeMap), background);
+    const nodeById = new Map(nodeTypes.map((t) => [t.id, t]));
+    const edgeById = new Map(edgeTypes.map((t) => [t.id, t]));
+    return {
+      background,
+      nodeTypes,
+      edgeTypes,
+      /** The type of node `id`; a node with no type, or a removed one, has the default. */
+      nodeType: (id: string): NodeType => {
+        const t = this.nodes.get(id)?.get("type");
+        return (typeof t === "string" ? nodeById.get(t) : undefined) ?? nodeById.get(DEFAULT_NODE_TYPE)!;
+      },
+      edgeType: (typeId: string): EdgeType => edgeById.get(typeId) ?? edgeById.get(DEFAULT_EDGE_TYPE)!,
+    };
   }
 
   /** The graph's name, set by its owner; empty until then. */

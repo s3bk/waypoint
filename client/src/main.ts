@@ -3,12 +3,17 @@ import { WebsocketProvider } from "y-websocket";
 import init, {
   creates_cycle,
   derive_positions,
+  move_group,
   move_node,
 } from "./wasm/waypoint_layout.js";
 import { askTitle, createGraph, getAccess, linkFor as shareLink, rememberGraph, setGraphTitle, type Access, type Role } from "./access";
 import { Camera } from "./camera";
+import { drawEdge, outline as shapeOutline, strokePath } from "./draw";
 import { Graph, type Place, type Vec2 } from "./graph";
 import { setupMargin } from "./margin";
+import { setupTypes } from "./types";
+import { hexNum } from "./style";
+import { applyTheme } from "./theme";
 
 const NEW_TITLE = "New node";
 
@@ -16,7 +21,6 @@ const NEW_TITLE = "New node";
 const NODE_W = 160;
 const NODE_H = 56;
 
-const EDGE_COLOR = 0x8aa0bd;
 const EDGE_SELECTED = 0xffb454;
 const EDGE_CONFLICTED = 0xe5484d;
 const ACCENT = 0x5aa9ff;
@@ -42,6 +46,18 @@ function boxExit(center: Vec2, target: Vec2): Vec2 {
   return { x: center.x + dx * t, y: center.y + dy * t };
 }
 
+/**
+ * Angle to draw text along the segment `a`→`b`: the segment's own angle, turned
+ * half a revolution when needed so the text's up never points downwards
+ * (dot(text_up, up) >= 0, i.e. cos(angle) >= 0 with y pointing down).
+ */
+function upright(a: Vec2, b: Vec2): number {
+  const angle = Math.atan2(b.y - a.y, b.x - a.x);
+  return Math.cos(angle) < 0 ? angle + Math.PI : angle;
+}
+
+const EDGE_LABEL_GAP = 8; // from the line to the text's centre, along the text's up
+
 /** A line from `a` to `b` with the arrowhead tip at `b`. */
 function arrow(g: Graphics, a: Vec2, b: Vec2, color: number, width = 2) {
   const angle = Math.atan2(b.y - a.y, b.x - a.x);
@@ -51,19 +67,6 @@ function arrow(g: Graphics, a: Vec2, b: Vec2, color: number, width = 2) {
   const nx = -Math.sin(angle) * ARROW_HALF_WIDTH;
   const ny = Math.cos(angle) * ARROW_HALF_WIDTH;
   g.poly([b.x, b.y, base.x + nx, base.y + ny, base.x - nx, base.y - ny]).fill(color);
-}
-
-/** Like `arrow`, but the line is dashed: a link that is kept but not in force. */
-function dashedArrow(g: Graphics, a: Vec2, b: Vec2, color: number, width = 2) {
-  const len = Math.hypot(b.x - a.x, b.y - a.y);
-  const ux = (b.x - a.x) / (len || 1);
-  const uy = (b.y - a.y) / (len || 1);
-  const line = Math.max(0, len - ARROW_LEN);
-  for (let d = 0; d < line; d += 14) {
-    const e = Math.min(d + 8, line);
-    g.moveTo(a.x + ux * d, a.y + uy * d).lineTo(a.x + ux * e, a.y + uy * e).stroke({ width, color, cap: "round" });
-  }
-  g.poly([b.x, b.y, b.x - ux * ARROW_LEN - uy * ARROW_HALF_WIDTH, b.y - uy * ARROW_LEN + ux * ARROW_HALF_WIDTH, b.x - ux * ARROW_LEN + uy * ARROW_HALF_WIDTH, b.y - uy * ARROW_LEN - ux * ARROW_HALF_WIDTH]).fill(color);
 }
 
 function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
@@ -80,7 +83,7 @@ interface Drag {
   /** Where the node should end up, absolute in the scope. */
   x: number;
   y: number;
-  /** Take the node's whole anchored sub-graph along; Shift drags only the node. */
+  /** Take what the node depends on along (Shift-drag); a plain drag moves only the node. */
   subtree: boolean;
 }
 
@@ -142,10 +145,9 @@ function setupShare(role: Role, keys: Partial<Record<Role, string>>) {
       const title = askTitle();
       if (title === null) return;
       const made = await createGraph(title);
-      window.alert(
-        `New graph "${title}". Keep these keys; they cannot be recovered.\n\nowner (everything, and can share the others):\n${made.owner}\n\neditor:\n${made.editor}\n\nviewer:\n${made.viewer}`,
-      );
-      window.open(shareLink(made.owner), "_blank");
+      // Go to the new graph in this tab. Only the hash differs, so the page must be reloaded to read it.
+      location.assign(shareLink(made.owner));
+      location.reload();
     } catch (e) {
       window.alert(String(e));
     } finally {
@@ -250,7 +252,9 @@ async function main() {
     if (localDrag) drags.push(localDrag);
     for (const d of drags) {
       const changes: [string, Place][] = JSON.parse(
-        move_node(json(places), d.node, Math.round(d.x), Math.round(d.y), d.subtree),
+        d.subtree
+          ? move_group(json(places), json(graph.edgePairs()), d.node, Math.round(d.x), Math.round(d.y))
+          : move_node(json(places), d.node, Math.round(d.x), Math.round(d.y), false),
       );
       for (const [id, place] of changes) places[id] = place;
     }
@@ -287,6 +291,10 @@ async function main() {
   function render() {
     world.removeChildren().forEach((c) => c.destroy({ children: true }));
     labels = [];
+    const reg = graph.registry();
+    app.renderer.background.color = hexNum(reg.background);
+    document.documentElement.style.background = reg.background;
+    applyTheme(reg.background);
     const positions: Record<string, Vec2> = JSON.parse(derive_positions(json(effectivePlaces())));
     // Nodes that move because of our own drag: whatever differs from the stored layout.
     const moving = new Set<string>();
@@ -304,6 +312,7 @@ async function main() {
     // Edges first, so nodes cover the line ends.
     const edges = new Graphics();
     edgeSegments = [];
+    const edgeLabels: Text[] = [];
     for (const e of graph.edges()) {
       const from = centers.get(e.from);
       const to = centers.get(e.to);
@@ -311,12 +320,34 @@ async function main() {
       const a = boxExit(from, to);
       const b = boxExit(to, from);
       edgeSegments.push({ key: e.key, a, b });
-      const draw = e.conflicted ? dashedArrow : arrow;
-      if (e.key === selectedEdge) draw(edges, a, b, EDGE_SELECTED, 3.5);
-      else draw(edges, a, b, e.conflicted ? EDGE_CONFLICTED : EDGE_COLOR);
+      const type = reg.edgeType(e.type);
+      if (e.key === selectedEdge) drawEdge(edges, a, b, type, { color: EDGE_SELECTED, width: Math.max(3.5, type.width + 1.5) });
+      else if (e.conflicted) drawEdge(edges, a, b, type, { color: EDGE_CONFLICTED, style: "dashed" });
+      else drawEdge(edges, a, b, type);
+
+      if (!type.label) continue; // an empty label draws nothing
+      const label = new Text({
+        text: type.label,
+        style: { fill: e.conflicted ? EDGE_CONFLICTED : hexNum(type.text_color), fontSize: 11, fontFamily: "system-ui, sans-serif" },
+        resolution: labelResolution(),
+      });
+      if (Math.hypot(b.x - a.x, b.y - a.y) < label.width + 2 * ARROW_LEN + 8) {
+        label.destroy(); // no room along this link
+        continue;
+      }
+      const angle = upright(a, b);
+      label.anchor.set(0.5);
+      label.rotation = angle;
+      // Sit on the text's upper side, so the line does not strike through it.
+      label.position.set(
+        (a.x + b.x) / 2 + Math.sin(angle) * EDGE_LABEL_GAP,
+        (a.y + b.y) / 2 - Math.cos(angle) * EDGE_LABEL_GAP,
+      );
+      edgeLabels.push(label);
+      labels.push(label);
     }
     if (selectedEdge && !edgeSegments.some((s) => s.key === selectedEdge)) selectedEdge = null; // removed elsewhere
-    world.addChild(edges);
+    world.addChild(edges, ...edgeLabels);
 
     // The link being drawn, and whether the node under the pointer would accept it.
     let linkTarget: { id: string; problem?: string } | null = null;
@@ -339,20 +370,26 @@ async function main() {
       const node = new Container();
       node.position.set(p.x, p.y);
 
-      const outline = linkTarget?.id === id
+      // The type's border, unless the node is being linked to, moved or selected.
+      const type = reg.nodeType(id);
+      const state = linkTarget?.id === id
         ? { width: 3, color: linkTarget.problem ? BAD : OK }
         : moving.has(id)
           ? { width: 2, color: ACCENT }
           : id === selectedNode
             ? { width: 2, color: SELECTED }
-            : { width: 1, color: 0x4a5568 };
-      node.addChild(new Graphics().roundRect(0, 0, NODE_W, NODE_H, 8).fill(0x2b3340).stroke(outline));
+            : null;
+      const shape = shapeOutline(type.shape, type.corners, NODE_W, NODE_H);
+      const body = new Graphics().poly(shape).fill(hexNum(type.bg));
+      if (state) strokePath(body, shape, true, state.color, state.width, "solid");
+      else strokePath(body, shape, true, hexNum(type.border), type.border_width, "solid");
+      node.addChild(body);
 
       const title = graph.title(id);
       const label = new Text({
         text: title || "untitled",
         style: {
-          fill: 0xe6e9ef,
+          fill: hexNum(type.fg),
           fontSize: 14,
           lineHeight: 17,
           fontFamily: "system-ui, sans-serif",
@@ -374,9 +411,10 @@ async function main() {
         // The short key (#12): how people and agents refer to this node. It never changes, even on rename.
         const badge = new Text({
           text: `#${key}`,
-          style: { fill: 0x8793a8, fontSize: 10, fontFamily: "system-ui, sans-serif" },
+          style: { fill: hexNum(type.fg), fontSize: 10, fontFamily: "system-ui, sans-serif" },
           resolution: labelResolution(),
         });
+        badge.alpha = 0.7;
         badge.anchor.set(1, 1);
         badge.position.set(NODE_W - 8, NODE_H - 4);
         node.addChild(badge);
@@ -386,9 +424,10 @@ async function main() {
         // The note lives in the margin; this shows that there is one.
         const count = new Text({
           text: "✎",
-          style: { fill: 0x8793a8, fontSize: 10, fontFamily: "system-ui, sans-serif" },
+          style: { fill: hexNum(type.fg), fontSize: 10, fontFamily: "system-ui, sans-serif" },
           resolution: labelResolution(),
         });
+        count.alpha = 0.7;
         count.anchor.set(0, 1);
         count.position.set(12, NODE_H - 4);
         node.addChild(count);
@@ -397,7 +436,7 @@ async function main() {
 
       if (showHandles === id) {
         const dots = new Graphics();
-        for (const x of [0, NODE_W]) dots.circle(x, NODE_H / 2, handleR).fill(0x14161a).stroke({ width: 2 / camera.zoom, color: ACCENT });
+        for (const x of [0, NODE_W]) dots.circle(x, NODE_H / 2, handleR).fill(hexNum(reg.background)).stroke({ width: 2 / camera.zoom, color: ACCENT });
         node.addChild(dots);
       }
       world.addChild(node);
@@ -407,7 +446,10 @@ async function main() {
     updateHint(moving.size, linkTarget);
     applyCamera();
     margin?.update(selectedNode);
+    typesPanel?.update();
   }
+
+  let typesPanel: ReturnType<typeof setupTypes> | undefined;
 
   let margin: ReturnType<typeof setupMargin> | undefined;
   const hint = document.getElementById("hint")!;
@@ -426,10 +468,10 @@ async function main() {
       if (localDrag.subtree) {
         hint.innerHTML =
           movingCount > 1
-            ? `Moving <b>${movingCount} nodes</b> · hold <b>Shift</b> to move only this node`
-            : "Moving <b>1 node</b> (nothing depends on it)";
+            ? `Moving <b>${movingCount} nodes</b> (the node and what it depends on) · release <b>Shift</b> to move only this node`
+            : "Moving <b>1 node</b> (it depends on nothing)";
       } else {
-        hint.innerHTML = "Moving <b>only this node</b> · release <b>Shift</b> to take its sub-graph along";
+        hint.innerHTML = "Moving <b>only this node</b> · hold <b>Shift</b> to take what it depends on along";
       }
     } else if (!canEdit) {
       hint.innerHTML = "<b>Read-only</b> (viewer key) · drag the canvas to pan, scroll to zoom";
@@ -441,7 +483,7 @@ async function main() {
       hint.innerHTML = "<b>Enter</b> renames · <b>Ctrl+Enter</b> adds a dependant · <b>Delete</b> removes it (its links are joined) · <b>Esc</b> deselects";
     } else {
       hint.innerHTML =
-        "<b>Double-click</b> empty canvas to add a node, a node to rename it · <b>Drag</b> a node to move it with its sub-graph (<b>Shift</b>: just the node)" +
+        "<b>Double-click</b> empty canvas to add a node, a node to rename it · <b>Drag</b> a node to move it (<b>Shift</b>-drag: with what it depends on)" +
         "<br>Drag from a node's <b>side dot</b> to another node to link them, or onto empty canvas to create one (the arrow points where you drop) · click a link, then <b>Delete</b>";
     }
   }
@@ -491,7 +533,7 @@ async function main() {
     editor.blur();
   }
 
-  /** This tab's name in the change log. Not an identity: anyone can send any name. */
+  /** This tab's name in the change log. Names are for people to read: they may repeat and prove nothing. */
   const actor = (() => {
     try {
       let a = sessionStorage.getItem("waypoint.actor");
@@ -501,7 +543,17 @@ async function main() {
       return "user";
     }
   })();
-  const headers = { Authorization: `Bearer ${access.key}`, "X-Waypoint-Actor": actor, "Content-Type": "application/json" };
+  /** This tab's id: it keys the tab's undo history, so tabs with the same name are still different peers. */
+  const peer = (() => {
+    try {
+      let p = sessionStorage.getItem("waypoint.peer");
+      if (!p) sessionStorage.setItem("waypoint.peer", (p = crypto.randomUUID()));
+      return p;
+    } catch {
+      return crypto.randomUUID();
+    }
+  })();
+  const headers = { Authorization: `Bearer ${access.key}`, "X-Waypoint-Actor": actor, "X-Waypoint-Peer": peer, "Content-Type": "application/json" };
 
   /**
    * Make a change through the same operations agents use. The server applies it
@@ -631,7 +683,7 @@ async function main() {
   }
 
   function startDrag(id: string, at: Vec2, w: Vec2, e: PointerLike) {
-    localDrag = { node: id, x: at.x, y: at.y, subtree: !e.shiftKey, grabX: w.x - at.x, grabY: w.y - at.y };
+    localDrag = { node: id, x: at.x, y: at.y, subtree: e.shiftKey, grabX: w.x - at.x, grabY: w.y - at.y };
     shiftDown = e.shiftKey;
     selectedEdge = null;
     publishDrag();
@@ -659,7 +711,7 @@ async function main() {
     else render();
   }
 
-  // Dragging a node moves it with its sub-graph; hold Shift to move just the node.
+  // Dragging a node moves just that node; hold Shift to take what it depends on along.
   // Dragging from a side dot links; dragging the background pans, the wheel zooms.
   app.canvas.addEventListener("pointerdown", onCanvasPress);
 
@@ -688,7 +740,7 @@ async function main() {
     const shown: Record<string, Vec2> = JSON.parse(derive_positions(json(effectivePlaces()))); // as dropped
     dropped = { node: d.node, x: d.x, y: d.y, subtree: d.subtree };
     void act(
-      [{ op: "move_node", node: d.node, x: Math.round(d.x), y: Math.round(d.y), with_subtree: d.subtree }],
+      [{ op: "move_node", node: d.node, x: Math.round(d.x), y: Math.round(d.y), with_dependencies: d.subtree }],
       "move",
     ).then(async (done) => {
       // Keep the preview until the stored layout shows the same place (or the move was refused).
@@ -713,7 +765,7 @@ async function main() {
       const w = worldOf(e);
       localDrag.x = w.x - localDrag.grabX;
       localDrag.y = w.y - localDrag.grabY;
-      localDrag.subtree = !e.shiftKey;
+      localDrag.subtree = e.shiftKey;
       shiftDown = e.shiftKey;
       publishDrag();
       render();
@@ -763,11 +815,11 @@ async function main() {
     // Shift pressed or released mid-drag, without moving the mouse.
     if (localDrag && e.key === "Shift" && e.shiftKey !== shiftDown) {
       shiftDown = e.shiftKey;
-      localDrag.subtree = !e.shiftKey;
+      localDrag.subtree = e.shiftKey;
       publishDrag();
       render();
     }
-    if (e.target instanceof Element && e.target.closest("#margin")) return; // typing in a note
+    if (e.target instanceof Element && e.target.closest("#margin, #types-panel")) return; // typing in a note or the types panel
     if (e.type !== "keydown" || editing || !canEdit) return;
     if ((e.key === "Delete" || e.key === "Backspace") && selectedEdge) {
       e.preventDefault();
@@ -811,6 +863,29 @@ async function main() {
       selectedNode = id;
       selectedEdge = null;
       render();
+    },
+  });
+  /** Send a request that changes the graph; resolves to the server's error text, or null if it went through. */
+  async function change(path: string, method: string, body: object): Promise<string | null> {
+    try {
+      const r = await fetch(`/api/graphs/${access.graph}/${path}`, { method, headers, body: JSON.stringify(body) });
+      if (r.ok) return null;
+      return (await r.json().catch(() => ({}))).error ?? `refused (${r.status})`;
+    } catch (e) {
+      return `failed: ${String(e)}`;
+    }
+  }
+  typesPanel = setupTypes(document.getElementById("types-panel")!, document.getElementById("types-button")!, {
+    graph,
+    canEdit,
+    isOwner: access.role === "owner",
+    send: (ops) => change("apply", "POST", { ops, label: "types" }),
+    setBackground: (color) => change("background", "PUT", { color }),
+    selectedNode: () => selectedNode,
+    selectedEdge: () => {
+      if (!selectedEdge) return null;
+      const [from, to] = selectedEdge.split(">");
+      return from && to ? { from, to } : null;
     },
   });
   graph.doc.on("update", render);

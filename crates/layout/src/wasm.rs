@@ -23,6 +23,15 @@ pub fn move_node(places: &str, id: &str, x: i32, y: i32, with_subtree: bool) -> 
     Ok(serde_json::to_string(&changes)?)
 }
 
+/// Like `move_node`, but the node moves together with everything it depends on.
+/// `edges` is JSON `[["<from>", "<to>"], ...]`. Returns JSON `[[id, place], ...]`.
+#[wasm_bindgen]
+pub fn move_group(places: &str, edges: &str, id: &str, x: i32, y: i32) -> Result<String, JsError> {
+    let places: BTreeMap<NodeId, Place> = serde_json::from_str(places)?;
+    let changes = crate::move_group(&places, &parse_edges(edges)?, parse_id(id)?, Vec2::new(x, y));
+    Ok(serde_json::to_string(&changes)?)
+}
+
 /// Add node `id` and make room. `parent` is a node id or "" for none; `(x, y)` is
 /// used when there is no parent. Returns JSON `[["<id>", place], ...]` with the
 /// new node's place and every place that was pushed.

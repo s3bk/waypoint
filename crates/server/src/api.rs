@@ -17,8 +17,43 @@ fn brief(n: &NodeRec) -> Value {
     json!({ "id": n.id.0, "key": n.key, "ref": n.key.map(|k| format!("#{k}")), "title": n.title })
 }
 
+/// The type registries and the canvas colour: what an agent needs to style things.
+pub fn types(snap: &Snapshot) -> Value {
+    json!({ "background": snap.background, "node_types": snap.node_types, "edge_types": snap.edge_types })
+}
+
 pub fn summary(snap: &Snapshot) -> Value {
     json!({ "title": snap.title, "nodes": snap.nodes.len(), "links": snap.edges.len(), "conflicts": snap.conflicted.len() })
+}
+
+/// The whole graph in one response: every node (key, title, note, position),
+/// every link as `from`/`to` refs ("from depends on to"), and set-aside links.
+pub fn full(snap: &Snapshot) -> Value {
+    let pos = derive_positions(&snap.places());
+    let label = |id: NodeId| snap.nodes[&id].key.map(|k| format!("#{k}")).unwrap_or_else(|| id.0.to_string());
+    let mut nodes: Vec<&NodeRec> = snap.nodes.values().collect();
+    nodes.sort_by_key(|n| (n.key.is_none(), n.key, n.id));
+    let nodes: Vec<Value> = nodes
+        .into_iter()
+        .map(|n| {
+            let mut v = brief(n);
+            v["note"] = json!(n.note);
+            v["node_type"] = json!(snap.node_type(n.type_id).name);
+            v["position"] = json!({ "x": pos[&n.id].x, "y": pos[&n.id].y });
+            v
+        })
+        .collect();
+    let links = |edges: &[crate::graph::EdgeRec]| -> Vec<Value> {
+        edges.iter().map(|e| json!({ "from": label(e.from), "to": label(e.to), "edge_type": snap.edge_type(e.type_id).name })).collect()
+    };
+    json!({
+        "title": snap.title,
+        "nodes": nodes,
+        "links": links(&snap.edges),
+        "conflicts": links(&snap.conflicted),
+        "types": types(snap),
+        "meaning": "a link from depends on to",
+    })
 }
 
 /// Links the server set aside because two people's changes together closed a
@@ -67,6 +102,7 @@ pub fn node(snap: &Snapshot, reference: &str) -> Result<Value, String> {
     v["depends_on"] = Value::Array(list(&|e| (e.from == id).then_some(e.to)));
     v["dependants"] = Value::Array(list(&|e| (e.to == id).then_some(e.from)));
     v["note"] = json!(n.note);
+    v["node_type"] = json!(snap.node_type(n.type_id).name);
     Ok(v)
 }
 

@@ -72,7 +72,7 @@ async fn agents_edit_while_a_browser_watches() {
     // MCP over stdio.
     let mut mcp = Mcp::start(&stack, &keys.editor);
     assert!(mcp.rpc("initialize", json!({ "protocolVersion": "2024-11-05" }))["result"].is_object());
-    assert_eq!(mcp.rpc("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 15);
+    assert_eq!(mcp.rpc("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 24);
     let made = mcp.tool("create_node", json!({ "title": "layout", "depends_on": ["#1"] }));
     assert_ne!(made["result"]["isError"], true, "{made}");
     until("the browser to show the MCP node", || async { page.titles().await.contains(&"layout".to_owned()) }).await;

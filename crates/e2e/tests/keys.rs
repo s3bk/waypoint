@@ -45,23 +45,21 @@ async fn new_graph_button_makes_a_graph_with_a_new_owner_key() {
     let owner = stack.page(&keys.owner).await;
     owner.driver.find(By::Id("share-button")).await.unwrap().click().await.unwrap();
     owner.driver.find(By::Id("new-graph-button")).await.unwrap().click().await.unwrap();
-    // It asks for a name first, then shows the keys once and opens the new graph in a new tab.
+    // It asks for a name first, then moves this tab to the new graph (its keys are in the Share panel, with no alert).
     until("the name prompt", || async { owner.driver.get_alert_text().await.is_ok() }).await;
     owner.driver.send_alert_text("Plan B").await.unwrap();
     owner.driver.accept_alert().await.unwrap();
-    until("the keys alert", || async { owner.driver.get_alert_text().await.is_ok() }).await;
-    let text = owner.driver.get_alert_text().await.unwrap();
-    assert!(text.contains("wp_owner_") && text.contains("wp_editor_") && text.contains("wp_viewer_"), "{text}");
-    owner.driver.accept_alert().await.unwrap();
-    until("a second tab", || async { owner.driver.windows().await.map(|w| w.len() == 2).unwrap_or(false) }).await;
-    let tabs = owner.driver.windows().await.unwrap();
-    owner.driver.switch_to_window(tabs[1].clone()).await.unwrap();
-    until("the new tab to load", || async { owner.js("return !!window.__waypoint").await == json!(true) }).await;
+    until("the tab to show the new graph", || async {
+        owner.js("return localStorage.getItem('waypoint.key')").await.as_str().is_some_and(|k| k != keys.owner)
+            && owner.js("return !!window.__waypoint").await == json!(true)
+    })
+    .await;
+    assert_eq!(owner.driver.windows().await.unwrap().len(), 1, "no extra tab");
     assert!(owner.role_label().await.starts_with("owner"));
     let stored = owner.js("return localStorage.getItem('waypoint.key')").await;
     let stored = stored.as_str().unwrap();
     assert!(stored.starts_with("wp_owner_") && stored != keys.owner, "a different owner key: {stored}");
-    assert!(text.contains(stored), "the key shown is the key in use");
+    assert!(owner.driver.get_alert_text().await.is_err(), "no alert about keys");
     assert!(owner.node_ids().await.is_empty(), "the new graph is empty");
     until("the title", || async { owner.js("return document.getElementById('doc-title').textContent").await == json!("Plan B") }).await;
 }

@@ -1,6 +1,6 @@
 # Waypoint: current status
 
-Last updated 2026-10-18. Design: [DESIGN.md](DESIGN.md). Data model and API:
+Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme follows canvas colour). Design: [DESIGN.md](DESIGN.md). Data model and API:
 [DATA_MODEL.md](DATA_MODEL.md). Setup: [README.md](README.md).
 
 ## Working
@@ -16,10 +16,7 @@ Last updated 2026-10-18. Design: [DESIGN.md](DESIGN.md). Data model and API:
 - **Layout crate** (native and WASM): anchored positions, drag with or without
   sub-graph, make-room, add/drop with edge avoidance, anchor repair, cycle
   check, link joining on delete.
-- **Agent API and MCP** (`crates/mcp`, binary `waypoint-mcp`): 12 tools
-  (`get_graph`, `search_nodes`, `get_node`, `get_neighbours`, `get_conflicts`, `create_node`,
-  `rename_node`, `delete_node`, `link_nodes`, `unlink_nodes`, `move_node`,
-  `apply_batch`). Batches are atomic, max 100 ops, `$N` refers to a node created
+- **Agent API and MCP** (`crates/mcp`, binary `waypoint-mcp`): 24 tools (the graph and node reads, `get_full_graph`, `get_types`, create/rename/delete/link/unlink/move, `set_note`/`append_note`, `set_node_type`, `upsert_*_type`, `remove_*_type`, `undo`, `redo`, `apply_batch`). Batches are atomic, max 100 ops, `$N` refers to a node created
   earlier in the batch.
 - **Keys** (`crates/server/src/auth.rs`): owner → editor → viewer, each derived
   from the one above by a hash; the graph is identified by its viewer key; a key
@@ -27,7 +24,7 @@ Last updated 2026-10-18. Design: [DESIGN.md](DESIGN.md). Data model and API:
   WebSocket but their updates are dropped. Nothing about keys is stored; graphs
   are filed under the hash of the viewer key. See DATA_MODEL.md.
 - **Client** (`client/`): PixiJS canvas, pan/zoom, drag with live preview,
-  shift-drag for one node, add/rename/delete nodes, add/remove links, hint bar.
+  drag moves one node, shift-drag takes what it depends on (`move_node` `with_dependencies`), add/rename/delete nodes, add/remove links, hint bar.
   All edits go through `POST /apply`, the same operations as agents; Ctrl+Z
   undoes and Ctrl+Shift+Z / Ctrl+Y redoes the tab's own batches.
   Asks for a key (or creates a graph), read-only mode for viewers, Share panel.
@@ -65,11 +62,36 @@ Last updated 2026-10-18. Design: [DESIGN.md](DESIGN.md). Data model and API:
 - **For agents:** the page shows REST instructions (`#for-agents` in
   `client/index.html`) until the app loads; `GET /api/graphs/{graph}/dot`
   (MCP `get_dot`) returns Graphviz DOT.
+- **Agent discovery:** `GET /llms.txt` (plain-text API guide), `GET /openapi.json`
+  (also `/api/schema`), both public and compiled in from `crates/server/docs/`
+  (the OpenAPI file is hand-maintained: update it when ops change). Every error
+  body carries `"docs": "/llms.txt"`, and `client/index.html` has an HTML comment
+  pointing at the docs.
+- **`?key=` on every REST route** (middleware `key_from_query` in
+  `crates/server/src/main.rs`) when no `Authorization` header is sent; the
+  header wins if both are present.
+- **Types** (`crates/model/src/style.rs`, `client/src/style.ts`, `client/src/types.ts`):
+  node types (shape: rect/pill/ellipse/hexagon/rhombus, corners: round/square, background + foreground set together, border color and width; no label)
+  and edge types (line color, text color, width 1-10, line style, start/end arrow:
+  none/arrow/dot/bar, label which may be empty), each a registry in the document (`node_types`, `edge_types`) that
+  only holds entries differing from the built-ins (`default`, `depends_on`). Rules, enforced
+  by the server and mirrored in the panel: node `fg` on `bg` >= 4.5:1; edge `text_color` >= 4.5:1
+  and `color` >= 3:1 against the **canvas colour**, which the owner sets
+  (`PUT /background`; edge types that stop reading are recoloured black/white and listed).
+  Widths are clamped. Ops `upsert_node_type`, `upsert_edge_type`, `remove_*`, `set_node_type`;
+  `create_node.node_type`, `link.edge_type` (relinking retypes). `GET /types`; `/full` carries them.
+  Panel: "types" button, top right. Every edge draws its type's label along it, upright.
+  Edge types all count as dependencies (cycle checks, layout): the type changes looks only.
+- **Theme:** the margin, panels, hint and title follow the canvas colour (`client/src/theme.ts`, CSS variables): a dark canvas gets the dark theme, a light one the light theme. The margin is its own surface: four fixed palettes (two dark, two light), and the closest to the canvas colour with at least 1.15:1 contrast against it is used; 2px border.
+- **Peers:** a caller sends `X-Waypoint-Peer` (random id per tab / MCP process) and
+  `X-Waypoint-Actor` (free-form name; may repeat). Undo history and the change log's `peer`
+  go by id; without an id the name is the id.
+- **Cleanup:** repair removes links whose end was deleted (or never existed).
 - The canvas draws on demand, not every frame (it used a core while idle).
 
 ## Verified
 
-- 100 Rust unit tests: 43 layout, 48 server, 9 MCP, plus 8 browser tests in
+- 119 Rust unit tests: 44 layout, 57 server, 9 MCP, 9 model, plus 10 browser tests in
   `crates/e2e` (thirtyfour, headless Chrome; `cargo test -p waypoint-e2e`):
   editing, MCP agent alongside a browser, keys and the Share panel, New graph,
   and a conflicted edge being flagged and kept. The editing test ends with
@@ -82,19 +104,21 @@ Last updated 2026-10-18. Design: [DESIGN.md](DESIGN.md). Data model and API:
 
 ## Not verified
 
+- The type panel and rendering (hexagon/ellipse shapes, dashed/dotted borders and lines, dot/bar
+  arrowheads) have been type-checked and exercised by one browser test, not looked at.
+
 - `claude mcp add --env WAYPOINT_KEY=<key> waypoint -- "$PWD/target/debug/waypoint-mcp"`
   (the README command) has not been run.
 
 ## Not built
 
-- Real identity: the actor is a self-declared label, not who the holder is.
+- Real identity: peer ids and names are self-declared; nothing says who holds a key.
 - Key revocation (derived keys cannot be revoked; rotate by moving to a new graph).
 - Durable undo (stacks are in memory, lost on restart), undoing repair writes,
   a log viewer in the UI, restore of deleted nodes from the log.
 - Command line.
-- Edge-type registry (only `depends_on`, id fixed in code), node kinds and
-  statuses, sub-graph frames, `Tidy`.
-- Validation of other shapes (dangling endpoints are only hidden, not cleaned up).
+- Node statuses, sub-graph frames, `Tidy`. Types have no meaning beyond looks; a registry UI for
+  merging duplicate type names (concurrent creation of one name hides the later id).
 
 ## Known issues and limits
 
@@ -102,7 +126,7 @@ Last updated 2026-10-18. Design: [DESIGN.md](DESIGN.md). Data model and API:
 - The old `demo` graph (and any graph stored under a plain name) is unreachable:
   graphs are now filed under the hash of their viewer key. It is still in
   `waypoint.db`; adopting it under new keys needs a small migration, not written.
-- A key in a WebSocket URL (`?key=`) can appear in proxy logs.
+- A key in a URL (`?key=`, WebSocket or REST) can appear in proxy logs.
 - The client still carries layout code for the live drag preview; committed
   edits use `/apply`, so the server decides the result.
 - A client needs an editor key and a reachable server to edit: edits are no
@@ -120,6 +144,14 @@ Last updated 2026-10-18. Design: [DESIGN.md](DESIGN.md). Data model and API:
   default `./waypoint.db`), on 127.0.0.1:3000.
 - Client: `cd client && npm run dev`, on 127.0.0.1:5173. `npm run wasm`
   rebuilds the layout WASM.
+- Deployed at https://waypoint.qdat.net (user systemd unit `waypoint.service`
+  on the host, listening on 127.0.0.1:3417). The binary is built here with
+  `cargo build --profile deploy -p waypoint-server` (full LTO, stripped) and
+  uploaded. **How to deploy, rollback and the host layout are in
+  `DEPLOY.local.md` in the repo root. It is deliberately not committed**
+  (listed in `.git/info/exclude`), so it exists only in the working copy it was
+  written in.
+- Source is in git at `git@github.com:s3bk/waypoint.git` (`main`).
 - Production: `WAYPOINT_STATIC` (built client directory), `WAYPOINT_ADDR`, `WAYPOINT_DB`.
 - MCP: `cargo build -p waypoint-mcp`; env `WAYPOINT_URL`
   (default `http://127.0.0.1:3000`), `WAYPOINT_KEY` (required).

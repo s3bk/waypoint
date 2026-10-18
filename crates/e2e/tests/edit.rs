@@ -35,6 +35,7 @@ async fn editing_in_the_browser_reaches_the_server() {
     until("editing alpha", || async { page.editing().await.as_deref() == Some(alpha.as_str()) }).await;
     page.type_title("gamma").await;
     until("renamed", || async { has_title("gamma") }).await;
+    until("renamed in the client", || async { page.id_titled("gamma").await.is_some() }).await;
     assert_eq!(page.id_titled("gamma").await.as_deref(), Some(alpha.as_str()));
     let gamma = titles().as_array().unwrap().iter().find(|n| n["title"] == "gamma").unwrap().clone();
     assert_eq!(gamma["key"], 1, "renaming keeps the key");
@@ -60,6 +61,7 @@ async fn editing_in_the_browser_reaches_the_server() {
     // Link two nodes by dragging from a side dot: delta depends on gamma.
     page.dblclick(640, 640).await;
     page.type_title("delta").await;
+    until("delta in the client", || async { page.id_titled("delta").await.is_some() }).await;
     let delta = page.id_titled("delta").await.expect("delta");
     let d = page.rect(&delta).await;
     let target = page.rect(&alpha).await.center();

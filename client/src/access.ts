@@ -224,8 +224,5 @@ export async function getAccess(): Promise<Access> {
     if (title === null) continue;
     const made = await createGraph(title);
     key = made.owner;
-    window.alert(
-      `New graph "${title}". Keep these keys; they cannot be recovered.\n\nowner (everything, and can share the others):\n${made.owner}\n\neditor:\n${made.editor}\n\nviewer:\n${made.viewer}`,
-    );
   }
 }

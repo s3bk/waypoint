@@ -14,7 +14,10 @@ use std::{
 };
 
 use uuid::Uuid;
-use waypoint_model::{EdgeTypeId, NodeId, Place, Vec2};
+use waypoint_model::{
+    EdgeTypeId, NodeId, Place, Vec2,
+    style::{self, EdgeType, Kind, NodeType},
+};
 use yrs::{
     Any, Array, ArrayRef, Doc, GetString, Map, MapPrelim, MapRef, Origin, Out, ReadTxn, StateVector, Text, TextPrelim,
     Transact, Update,
@@ -28,6 +31,10 @@ pub struct Graph {
     edges: MapRef,
     /// Document-level settings; today only `title`, which only the owner route writes.
     meta: MapRef,
+    /// The type registries: `Y.Map<type id, Y.Map>`, one field per key. Only
+    /// entries that differ from the built-in defaults need to exist.
+    node_types: MapRef,
+    edge_types: MapRef,
     /// Who changed what: one JSON string per batch, appended in the same
     /// transaction as the batch. Not tracked by undo, so undoing leaves a trace.
     log: ArrayRef,
@@ -48,6 +55,8 @@ pub struct NodeRec {
     pub place: Place,
     /// The node's shared note (empty until someone writes one).
     pub note: String,
+    /// The node's type; `None` means the default node type.
+    pub type_id: Option<Uuid>,
 }
 
 /// A live edge: `from` depends on `to`.
@@ -68,11 +77,30 @@ pub struct Snapshot {
     /// Edges the server set aside because they closed a dependency cycle. They
     /// are not part of `edges`, so planning never sees them.
     pub conflicted: Vec<EdgeRec>,
+    /// Edge entries still marked live whose end is a deleted or unknown node, e.g. a link one
+    /// client added to a node another had just deleted. Repair removes them.
+    pub dangling: Vec<(NodeId, NodeId)>,
     /// The graph's name, set by the owner; empty until then.
     pub title: String,
+    /// The registries as they stand: built-in defaults overlaid with the document's entries, removed ones left out.
+    pub node_types: Vec<NodeType>,
+    pub edge_types: Vec<EdgeType>,
+    /// The canvas colour, set by the owner; edge colours and text are kept readable on it.
+    pub background: String,
 }
 
 impl Snapshot {
+    /// The entry for a node's type; a missing or removed type shows as the default.
+    pub fn node_type(&self, id: Option<Uuid>) -> &NodeType {
+        let default = || self.node_types.iter().find(|t| t.id == style::DEFAULT_NODE_TYPE).expect("default node type");
+        id.and_then(|id| self.node_types.iter().find(|t| t.id == id)).unwrap_or_else(default)
+    }
+
+    pub fn edge_type(&self, id: EdgeTypeId) -> &EdgeType {
+        let default = || self.edge_types.iter().find(|t| t.id == style::DEFAULT_EDGE_TYPE).expect("default edge type");
+        self.edge_types.iter().find(|t| t.id == id.0).unwrap_or_else(default)
+    }
+
     pub fn places(&self) -> BTreeMap<NodeId, Place> {
         self.nodes.iter().map(|(&id, n)| (id, n.place)).collect()
     }
@@ -96,6 +124,15 @@ pub enum Write {
     /// Flag the edge between this ordered pair as closing a cycle. Linking the
     /// pair again writes a fresh entry, which clears the flag.
     MarkConflicted { from: NodeId, to: NodeId },
+    /// Give a node a type (`None`: the default).
+    SetNodeType { id: NodeId, type_id: Option<Uuid> },
+    /// Create or change a registry entry by writing these fields (the planner
+    /// passes only the ones that changed, so edits to different fields merge).
+    UpsertType { kind: Kind, id: Uuid, fields: Vec<(String, serde_json::Value)> },
+    /// Set the canvas colour.
+    SetBackground { color: String },
+    /// Mark a registry entry removed.
+    RemoveType { kind: Kind, id: Uuid },
     /// Change the node's note by editing only the part that differs.
     SetNote { id: NodeId, body: String },
     /// Add text at the end of the node's note.
@@ -136,6 +173,43 @@ fn text_diff<'a>(old: &str, new: &'a str) -> (usize, usize, &'a str) {
     (prefix, o.len() - suffix, &n[..n.len() - suffix])
 }
 
+fn any_u32(a: Option<&Any>) -> Option<u32> {
+    match a {
+        Some(Any::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as u32),
+        _ => None,
+    }
+}
+
+/// The fields of `new` that differ from `old` (all of them if there is no `old`), for [`Write::UpsertType`].
+pub fn node_diff(old: Option<&NodeType>, new: &NodeType) -> Vec<(String, serde_json::Value)> {
+    use serde_json::{Value, json};
+    let all: [(&str, Value, Option<Value>); 7] = [
+        ("name", json!(new.name), old.map(|o| json!(o.name))),
+        ("shape", json!(new.shape), old.map(|o| json!(o.shape))),
+        ("bg", json!(new.bg), old.map(|o| json!(o.bg))),
+        ("fg", json!(new.fg), old.map(|o| json!(o.fg))),
+        ("border", json!(new.border), old.map(|o| json!(o.border))),
+        ("border_width", json!(new.border_width), old.map(|o| json!(o.border_width))),
+        ("corners", json!(new.corners), old.map(|o| json!(o.corners))),
+    ];
+    all.into_iter().filter(|(_, n, o)| o.as_ref() != Some(n)).map(|(k, n, _)| (k.to_owned(), n)).collect()
+}
+
+pub fn edge_diff(old: Option<&EdgeType>, new: &EdgeType) -> Vec<(String, serde_json::Value)> {
+    use serde_json::{Value, json};
+    let all: [(&str, Value, Option<Value>); 8] = [
+        ("name", json!(new.name), old.map(|o| json!(o.name))),
+        ("label", json!(new.label), old.map(|o| json!(o.label))),
+        ("color", json!(new.color), old.map(|o| json!(o.color))),
+        ("width", json!(new.width), old.map(|o| json!(o.width))),
+        ("line_style", json!(new.line_style), old.map(|o| json!(o.line_style))),
+        ("start", json!(new.start), old.map(|o| json!(o.start))),
+        ("end", json!(new.end), old.map(|o| json!(o.end))),
+        ("text_color", json!(new.text_color), old.map(|o| json!(o.text_color))),
+    ];
+    all.into_iter().filter(|(_, n, o)| o.as_ref() != Some(n)).map(|(k, n, _)| (k.to_owned(), n)).collect()
+}
+
 fn parse_node(key: &str) -> Option<NodeId> {
     key.parse::<Uuid>().ok().map(NodeId)
 }
@@ -146,8 +220,10 @@ impl Graph {
         let nodes = doc.get_or_insert_map("nodes");
         let edges = doc.get_or_insert_map("edges");
         let meta = doc.get_or_insert_map("meta");
+        let node_types = doc.get_or_insert_map("node_types");
+        let edge_types = doc.get_or_insert_map("edge_types");
         let log = doc.get_or_insert_array("log");
-        Self { doc, nodes, edges, meta, log, undo: Mutex::new(HashMap::new()) }
+        Self { doc, nodes, edges, meta, node_types, edge_types, log, undo: Mutex::new(HashMap::new()) }
     }
 
     /// Insert a node. Used for seeding and tests; edits from the API go through
@@ -185,6 +261,8 @@ impl Graph {
         };
         let mut manager = UndoManager::with_scope_and_options(&self.doc, &self.nodes, options);
         manager.expand_scope(&self.edges);
+        manager.expand_scope(&self.node_types);
+        manager.expand_scope(&self.edge_types);
         all.insert(actor.to_owned(), manager);
     }
 
@@ -266,6 +344,51 @@ impl Graph {
                 Write::MarkConflicted { from, to } => {
                     self.update_edges(&mut txn, |f, t| f == *from && t == *to, "conflicted");
                 }
+                Write::SetNodeType { id, type_id } => {
+                    if let Some(Out::YMap(m)) = self.nodes.get(&txn, &id.0.to_string()) {
+                        let value = type_id.map(|t| t.to_string()).unwrap_or_default();
+                        m.insert(&mut txn, "type", Any::from(value));
+                    }
+                }
+                Write::UpsertType { kind, id, fields } => {
+                    let registry = self.registry(*kind);
+                    let key = id.to_string();
+                    let entry = match registry.get(&txn, &key) {
+                        Some(Out::YMap(m)) => m,
+                        _ => registry.insert(&mut txn, key, MapPrelim::from([("id".to_string(), Any::from(id.to_string()))])),
+                    };
+                    for (field, value) in fields {
+                        let value = match value {
+                            serde_json::Value::String(s) => Any::from(s.as_str()),
+                            serde_json::Value::Number(n) => Any::Number(n.as_f64().unwrap_or(0.0)),
+                            _ => continue,
+                        };
+                        entry.insert(&mut txn, field.as_str(), value);
+                    }
+                    entry.insert(&mut txn, "removed", Any::from(false));
+                }
+                Write::SetBackground { color } => {
+                    self.meta.insert(&mut txn, "background", Any::from(color.as_str()));
+                }
+                Write::RemoveType { kind, id } => {
+                    let registry = self.registry(*kind);
+                    let key = id.to_string();
+                    match registry.get(&txn, &key) {
+                        Some(Out::YMap(m)) => {
+                            m.insert(&mut txn, "removed", Any::from(true));
+                        }
+                        _ => {
+                            registry.insert(
+                                &mut txn,
+                                key,
+                                MapPrelim::from([
+                                    ("id".to_string(), Any::from(id.to_string())),
+                                    ("removed".to_string(), Any::from(true)),
+                                ]),
+                            );
+                        }
+                    }
+                }
                 Write::DeleteNode { id } => {
                     if let Some(Out::YMap(m)) = self.nodes.get(&txn, &id.0.to_string()) {
                         m.insert(&mut txn, "deleted", Any::from(true));
@@ -294,6 +417,116 @@ impl Graph {
             }
         }
         txn.encode_update_v1()
+    }
+
+    fn registry(&self, kind: Kind) -> &MapRef {
+        match kind {
+            Kind::Node => &self.node_types,
+            Kind::Edge => &self.edge_types,
+        }
+    }
+
+    /// The raw entries of a registry that are not removed. A built-in entry can
+    /// be overridden but not removed.
+    fn registry_entries(&self, txn: &impl ReadTxn, kind: Kind) -> Vec<(Uuid, HashMap<String, Any>)> {
+        let builtin = match kind {
+            Kind::Node => style::DEFAULT_NODE_TYPE,
+            Kind::Edge => style::DEFAULT_EDGE_TYPE,
+        };
+        let Any::Map(entries) = self.registry(kind).to_json(txn) else { return Vec::new() };
+        entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                let (Ok(id), Any::Map(f)) = (key.parse::<Uuid>(), entry) else { return None };
+                (!any_bool(f.get("removed")) || id == builtin).then(|| (id, f.as_ref().clone()))
+            })
+            .collect()
+    }
+
+    /// The node types as they stand: the built-in default overlaid with the document's
+    /// entries. A field that is missing or not allowed falls back to the default, so a
+    /// hand-made or half-merged entry still draws. When two entries share a name the one
+    /// with the earlier id keeps it and the other is hidden.
+    fn read_node_types(&self, txn: &impl ReadTxn) -> Vec<NodeType> {
+        let builtin = style::builtin_node();
+        let mut defs: BTreeMap<Uuid, NodeType> = BTreeMap::from([(builtin.id, builtin.clone())]);
+        for (id, f) in self.registry_entries(txn, Kind::Node) {
+            let base = defs.get(&id).cloned().unwrap_or_else(|| NodeType { id, name: id.to_string(), ..builtin.clone() });
+            let text = |k: &str, fallback: &str| any_str(f.get(k)).unwrap_or(fallback).to_owned();
+            let color = |k: &str, fallback: &str| any_str(f.get(k)).and_then(|c| style::normalize_color(c).ok()).unwrap_or_else(|| fallback.to_owned());
+            let name = style::normalize_name(&text("name", &base.name)).unwrap_or_else(|_| base.name.clone());
+            let mut def = NodeType {
+                id,
+                name,
+                shape: text("shape", &base.shape),
+                bg: color("bg", &base.bg),
+                fg: color("fg", &base.fg),
+                border: color("border", &base.border),
+                border_width: any_u32(f.get("border_width")).map(style::border_width).unwrap_or(base.border_width),
+                corners: text("corners", &base.corners),
+            };
+            if def.shape == "rounded" {
+                // Written before corners existed.
+                def.shape = "rect".into();
+                if f.get("corners").is_none() {
+                    def.corners = "round".into();
+                }
+            }
+            if !style::NODE_SHAPES.contains(&def.shape.as_str()) {
+                def.shape = base.shape.clone();
+            }
+            if !style::CORNERS.contains(&def.corners.as_str()) {
+                def.corners = base.corners.clone();
+            }
+            if style::check_contrast("", &def.bg, &def.fg).is_err() {
+                (def.bg, def.fg) = (builtin.bg.clone(), builtin.fg.clone());
+            }
+            defs.insert(id, def);
+        }
+        let mut seen = BTreeSet::new();
+        defs.into_values().filter(|d| seen.insert(d.name.clone())).collect()
+    }
+
+    /// Like [`Graph::read_node_types`]; the line and text colours must also read on `background`,
+    /// and fall back to black or white if the background was changed under them.
+    fn read_edge_types(&self, txn: &impl ReadTxn, background: &str) -> Vec<EdgeType> {
+        let builtin = style::builtin_edge();
+        let mut defs: BTreeMap<Uuid, EdgeType> = BTreeMap::from([(builtin.id, builtin.clone())]);
+        for (id, f) in self.registry_entries(txn, Kind::Edge) {
+            let known = defs.contains_key(&id);
+            let base = defs.get(&id).cloned().unwrap_or_else(|| EdgeType { id, name: id.to_string(), ..builtin.clone() });
+            let text = |k: &str, fallback: &str| any_str(f.get(k)).unwrap_or(fallback).to_owned();
+            let color = |k: &str, fallback: &str| any_str(f.get(k)).and_then(|c| style::normalize_color(c).ok()).unwrap_or_else(|| fallback.to_owned());
+            let name = style::normalize_name(&text("name", &base.name)).unwrap_or_else(|_| base.name.clone());
+            let pick = |k: &str, fallback: &str, allowed: &[&str]| {
+                let v = text(k, fallback);
+                if allowed.contains(&v.as_str()) { v } else { fallback.to_owned() }
+            };
+            let def = EdgeType {
+                id,
+                // An empty label is a label (nothing is drawn); only a missing one falls back.
+                label: any_str(f.get("label")).unwrap_or(if known { &base.label } else { &name }).to_owned(),
+                name,
+                color: color("color", &base.color),
+                width: any_u32(f.get("width")).map(style::edge_width).unwrap_or(base.width),
+                line_style: pick("line_style", &base.line_style, style::LINE_STYLES),
+                start: pick("start", &base.start, style::ARROWS),
+                end: pick("end", &base.end, style::ARROWS),
+                text_color: color("text_color", &base.text_color),
+            };
+            defs.insert(id, def);
+        }
+        let readable = style::readable_on(background);
+        for d in defs.values_mut() {
+            if style::check_line_contrast("", background, &d.color).is_err() {
+                d.color = readable.into();
+            }
+            if style::check_contrast("", background, &d.text_color).is_err() {
+                d.text_color = readable.into();
+            }
+        }
+        let mut seen = BTreeSet::new();
+        defs.into_values().filter(|d| seen.insert(d.name.clone())).collect()
     }
 
     /// The node's note text, created if an older node has none.
@@ -338,6 +571,12 @@ impl Graph {
             Some(Out::Any(Any::String(t))) => t.to_string(),
             _ => String::new(),
         };
+        snap.background = match self.meta.get(&txn, "background") {
+            Some(Out::Any(Any::String(c))) => style::normalize_color(&c).unwrap_or_else(|_| style::DEFAULT_BACKGROUND.into()),
+            _ => style::DEFAULT_BACKGROUND.into(),
+        };
+        snap.node_types = self.read_node_types(&txn);
+        snap.edge_types = self.read_edge_types(&txn, &snap.background);
         if let Any::Map(nodes) = self.nodes.to_json(&txn) {
             for (key, node) in nodes.iter() {
                 let (Some(id), Any::Map(f)) = (parse_node(key), node) else { continue };
@@ -353,6 +592,7 @@ impl Graph {
                         title: any_str(f.get("title")).unwrap_or("").to_owned(),
                         place,
                         note: any_str(f.get("note")).unwrap_or("").to_owned(),
+                        type_id: any_str(f.get("type")).and_then(|t| t.parse::<Uuid>().ok()),
                     },
                 );
             }
@@ -377,6 +617,9 @@ impl Graph {
                     continue;
                 };
                 if !snap.nodes.contains_key(&from) || !snap.nodes.contains_key(&to) {
+                    if !snap.dangling.contains(&(from, to)) {
+                        snap.dangling.push((from, to));
+                    }
                     continue;
                 }
                 let type_id = any_str(f.get("type"))

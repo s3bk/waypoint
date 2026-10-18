@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use waypoint_model::{NODE_HEIGHT, NODE_WIDTH, NodeId, Place, Vec2};
 
-use crate::{derive_positions, move_node};
+use crate::{derive_positions, move_group, move_node};
 
 /// Free space kept between neighbouring nodes.
 pub const MARGIN: i32 = 24;
@@ -173,7 +173,7 @@ fn edge_nudge(
     None
 }
 
-/// Move `id` (with its sub-graph, or alone) off any edge it lies on. `moved`
+/// Move `id` (with what it depends on, or alone) off any edge it lies on. `moved`
 /// is the group that moves rigidly with it. Returns the updated places.
 fn nudge_off_edges(
     mut cur: BTreeMap<NodeId, Place>,
@@ -185,7 +185,7 @@ fn nudge_off_edges(
     for _ in 0..MAX_EDGE_PASSES {
         let pos = derive_positions(&cur);
         let Some(d) = edge_nudge(&pos, edges, moved) else { break };
-        let changes = move_node(&cur, id, pos[&id] + d, with_subtree);
+        let changes = if with_subtree { move_group(&cur, edges, id, pos[&id] + d) } else { move_node(&cur, id, pos[&id] + d, false) };
         if changes.is_empty() {
             break;
         }
@@ -302,7 +302,7 @@ pub fn drop_node(
     target: Vec2,
     with_subtree: bool,
 ) -> Vec<(NodeId, Place)> {
-    let moved = move_node(places, id, target, with_subtree);
+    let moved = if with_subtree { move_group(places, edges, id, target) } else { move_node(places, id, target, false) };
     if moved.is_empty() {
         return moved;
     }
@@ -496,8 +496,8 @@ mod tests {
         let follower = NodeId::new();
         p.insert(follower, Place { anchor: Some(head), off: v(STEP, 0) });
         let bystander = at(&mut p, 1000, STEP);
-        // Drag the pair so the follower lands on the bystander.
-        let out = apply(&p, drop_node(&p, &[], head, v(1000 - STEP, STEP), true));
+        // Drag the pair (head depends on follower) so the follower lands on the bystander.
+        let out = apply(&p, drop_node(&p, &[(head, follower)], head, v(1000 - STEP, STEP), true));
         let pos = derive_positions(&out);
         assert_eq!(pos[&follower], v(1000, STEP), "the sub-graph keeps its shape");
         assert_ne!(pos[&bystander], v(1000, STEP));
@@ -579,7 +579,7 @@ mod tests {
         let head = at(&mut p, 0, 800);
         let tail = NodeId::new();
         p.insert(tail, Place { anchor: Some(head), off: v(STEP, 0) });
-        let edges = [(a, b)];
+        let edges = [(a, b), (head, tail)];
         let out = apply(&p, drop_node(&p, &edges, head, v(900, 0), true));
         let pos = derive_positions(&out);
         assert!(!touches_edge(&out, a, b, head) && !touches_edge(&out, a, b, tail));

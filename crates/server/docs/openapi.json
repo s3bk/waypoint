@@ -242,6 +242,37 @@
     }
    }
   },
+  "/api/graphs/{graph}/full": {
+   "get": {
+    "summary": "The whole graph as JSON (nodes, links, conflicts, types)",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
   "/api/graphs/{graph}/dot": {
    "get": {
     "summary": "Graphviz DOT text",
@@ -358,7 +389,17 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
+      },
+      "description": "what the caller calls itself; may repeat, proves nothing"
+     },
+     {
+      "name": "X-Waypoint-Peer",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "the caller's id for this session; keys its undo history"
      }
     ],
     "responses": {
@@ -421,6 +462,10 @@
               },
               "y": {
                "type": "integer"
+              },
+              "node_type": {
+               "type": "string",
+               "description": "name of a node type"
               }
              }
             },
@@ -478,6 +523,10 @@
               "to": {
                "type": "string",
                "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "edge_type": {
+               "type": "string",
+               "description": "name of an edge type; an existing link is changed to it"
               }
              }
             },
@@ -524,7 +573,7 @@
               "y": {
                "type": "integer"
               },
-              "with_subtree": {
+              "with_dependencies": {
                "type": "boolean"
               }
              }
@@ -568,6 +617,170 @@
                "type": "string"
               }
              }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "node",
+              "node_type"
+             ],
+             "properties": {
+              "op": {
+               "const": "set_node_type"
+              },
+              "node": {
+               "type": "string",
+               "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
+              },
+              "node_type": {
+               "type": "string",
+               "description": "type name, or \"default\""
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "name"
+             ],
+             "properties": {
+              "op": {
+               "const": "upsert_node_type"
+              },
+              "name": {
+               "type": "string"
+              },
+              "new_name": {
+               "type": "string"
+              },
+              "shape": {
+               "type": "string",
+               "enum": [
+                "rect",
+                "pill",
+                "ellipse",
+                "hexagon",
+                "rhombus"
+               ]
+              },
+              "bg": {
+               "type": "string",
+               "description": "#rrggbb"
+              },
+              "fg": {
+               "type": "string",
+               "description": "#rrggbb"
+              },
+              "border": {
+               "type": "string",
+               "description": "#rrggbb"
+              },
+              "border_width": {
+               "type": "integer",
+               "description": "clamped to 0-10"
+              },
+              "corners": {
+               "type": "string",
+               "enum": [
+                "round",
+                "square"
+               ],
+               "description": "corner style of rect, hexagon and rhombus"
+              }
+             },
+             "description": "Create or change a node type; only given fields change. bg and fg are set together and need contrast >= 4.5:1."
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "name"
+             ],
+             "properties": {
+              "op": {
+               "const": "upsert_edge_type"
+              },
+              "name": {
+               "type": "string"
+              },
+              "new_name": {
+               "type": "string"
+              },
+              "label": {
+               "type": "string"
+              },
+              "color": {
+               "type": "string",
+               "description": "#rrggbb"
+              },
+              "text_color": {
+               "type": "string",
+               "description": "#rrggbb"
+              },
+              "width": {
+               "type": "integer",
+               "description": "clamped to 1-10"
+              },
+              "line_style": {
+               "type": "string",
+               "enum": [
+                "solid",
+                "dashed",
+                "dotted"
+               ]
+              },
+              "start": {
+               "type": "string",
+               "enum": [
+                "none",
+                "arrow",
+                "dot",
+                "bar"
+               ]
+              },
+              "end": {
+               "type": "string",
+               "enum": [
+                "none",
+                "arrow",
+                "dot",
+                "bar"
+               ]
+              }
+             },
+             "description": "Create or change an edge type. color needs contrast >= 3:1 and text_color >= 4.5:1 against the graph background."
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "name"
+             ],
+             "properties": {
+              "op": {
+               "const": "remove_node_type"
+              },
+              "name": {
+               "type": "string"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "name"
+             ],
+             "properties": {
+              "op": {
+               "const": "remove_edge_type"
+              },
+              "name": {
+               "type": "string"
+              }
+             }
             }
            ],
            "discriminator": {
@@ -605,7 +818,17 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
+      },
+      "description": "what the caller calls itself; may repeat, proves nothing"
+     },
+     {
+      "name": "X-Waypoint-Peer",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "the caller's id for this session; keys its undo history"
      }
     ],
     "responses": {
@@ -644,7 +867,17 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
+      },
+      "description": "what the caller calls itself; may repeat, proves nothing"
+     },
+     {
+      "name": "X-Waypoint-Peer",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "the caller's id for this session; keys its undo history"
      }
     ],
     "responses": {
@@ -683,7 +916,17 @@
       "required": false,
       "schema": {
        "type": "string"
-      }
+      },
+      "description": "what the caller calls itself; may repeat, proves nothing"
+     },
+     {
+      "name": "X-Waypoint-Peer",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "the caller's id for this session; keys its undo history"
      }
     ],
     "responses": {
@@ -709,6 +952,105 @@
         "properties": {
          "title": {
           "type": "string"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/types": {
+   "get": {
+    "summary": "Node types, edge types and the background colour",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok",
+      "content": {
+       "application/json": {}
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/api/graphs/{graph}/background": {
+   "put": {
+    "summary": "Set the background colour (owner key); edge types that would stop being readable are recoloured",
+    "security": [
+     {
+      "bearer": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "graph",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "X-Waypoint-Actor",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "what the caller calls itself; may repeat, proves nothing"
+     },
+     {
+      "name": "X-Waypoint-Peer",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "the caller's id for this session; keys its undo history"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "ok"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "description": "key role too low"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "color"
+        ],
+        "properties": {
+         "color": {
+          "type": "string",
+          "description": "#rrggbb"
          }
         }
        }

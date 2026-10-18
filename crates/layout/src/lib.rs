@@ -3,7 +3,7 @@
 //! DATA_MODEL.md, "Layout"). Everything is pure and deterministic so the
 //! server (native) and the client (WASM) agree.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use waypoint_model::{NodeId, Place, Vec2};
 
@@ -107,6 +107,53 @@ pub fn move_node(
         }
     }
 
+    after.into_iter().filter(|(n, p)| places[n] != *p).collect()
+}
+
+/// `id` and everything it depends on, directly or not. An edge `(from, to)` means "from depends on to".
+pub fn dependency_group(edges: &[(NodeId, NodeId)], id: NodeId) -> BTreeSet<NodeId> {
+    let mut group = BTreeSet::from([id]);
+    let mut queue = vec![id];
+    while let Some(n) = queue.pop() {
+        for &(from, to) in edges {
+            if from == n && group.insert(to) {
+                queue.push(to);
+            }
+        }
+    }
+    group
+}
+
+/// The places that change when `id` is dragged to `target` together with all
+/// it depends on ([`dependency_group`]), which move rigidly by the same offset.
+///
+/// A member whose anchor is outside the group takes the offset in its own place;
+/// a member anchored to another member follows it. A node outside the group that
+/// is anchored to a member would follow too, so its offset is compensated and it
+/// stays where it was. Returns only places that differ, sorted by id.
+pub fn move_group(
+    places: &BTreeMap<NodeId, Place>,
+    edges: &[(NodeId, NodeId)],
+    id: NodeId,
+    target: Vec2,
+) -> Vec<(NodeId, Place)> {
+    let before = derive_positions(places);
+    let Some(&current) = before.get(&id) else { return Vec::new() };
+    let delta = target - current;
+    if delta == Vec2::ZERO {
+        return Vec::new();
+    }
+    let group = dependency_group(edges, id);
+    let mut after = places.clone();
+    for (n, place) in after.iter_mut() {
+        let member = group.contains(n);
+        let follows = place.anchor.is_some_and(|a| group.contains(&a));
+        if member && !follows {
+            place.off = place.off + delta;
+        } else if !member && follows {
+            place.off = place.off - delta;
+        }
+    }
     after.into_iter().filter(|(n, p)| places[n] != *p).collect()
 }
 
@@ -260,5 +307,25 @@ mod tests {
         for e in entries { a.insert(e.0, e.1); }
         for e in entries.iter().rev() { b.insert(e.0, e.1); }
         assert_eq!(derive_positions(&a), derive_positions(&b));
+    }
+
+    #[test]
+    fn group_drag_moves_what_the_node_depends_on_and_nothing_else() {
+        // main depends on dep (dep is not anchored to main); other hangs off main by its anchor only.
+        let n = ids(4);
+        let (main, dep, deeper, other) = (n[0], n[1], n[2], n[3]);
+        let mut places = BTreeMap::new();
+        places.insert(main, Place::at_origin(v(0, 0)));
+        places.insert(dep, Place::at_origin(v(300, 0)));
+        places.insert(deeper, Place { anchor: Some(dep), off: v(0, 100) });
+        places.insert(other, Place { anchor: Some(main), off: v(0, 200) });
+        let edges = [(main, dep), (dep, deeper)];
+        let moved = apply(&places, move_group(&places, &edges, main, v(10, 50)));
+        let pos = derive_positions(&moved);
+        assert_eq!(pos[&main], v(10, 50));
+        assert_eq!(pos[&dep], v(310, 50), "a dependency moves along");
+        assert_eq!(pos[&deeper], v(310, 150), "and what it depends on");
+        assert_eq!(pos[&other], v(0, 200), "an unrelated node anchored under main stays put");
+        assert_eq!(dependency_group(&edges, dep), BTreeSet::from([dep, deeper]), "main is not a dependency of dep");
     }
 }

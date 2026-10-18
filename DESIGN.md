@@ -67,8 +67,8 @@ collaborative and real-time. Humans and AI agents work on the same graph.
   (the scope origin if it has no neighbour). Absolute positions are derived.
   Moving a cluster or making room for a new node costs one write per subtree
   root, not one per node.
-- Nodes are draggable. A drag takes the node's sub-graph (its dependants)
-  along; Shift moves only that node. The UI outlines what will move and
+- Nodes are draggable. A drag moves only that node; Shift-drag
+  takes the node together with everything it depends on (transitively) along. The UI outlines what will move and
   hints how to switch, because the sub-graph is hidden structure. Dragging is
   previewed live to others without writing to the document; the drop is one
   transaction.
@@ -85,8 +85,8 @@ collaborative and real-time. Humans and AI agents work on the same graph.
 
 ### Interaction (what the client does today)
 - **Canvas:** drag the background to pan, wheel to zoom.
-- **Nodes:** each shows its short key (`#12`) in the corner. Click selects. Drag moves the node with its sub-graph; Shift-drag
-  moves only that node (switchable mid-drag). While dragging, the nodes that
+- **Nodes:** each shows its short key (`#12`) in the corner. Click selects. Drag moves only that node; Shift-drag
+  moves it with what it depends on (switchable mid-drag). While dragging, the nodes that
   will move are outlined and a hint bar says how to switch. Other people's
   drags are previewed live. The drop is one transaction and makes room.
 - **Adding:** double-click empty canvas adds a node and opens its title.

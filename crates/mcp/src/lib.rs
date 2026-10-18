@@ -49,6 +49,11 @@ fn tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "get_full_graph",
+            "description": "The whole graph as JSON: every node (key, title, note, position), every link (`from` depends on `to`) and the set-aside conflicts.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
             "name": "search_nodes",
             "description": "List nodes, optionally filtered by a case-insensitive title substring (or a key like \"#12\"). Ordered by key. Returns each node's key, ref and title.",
             "inputSchema": { "type": "object", "properties": {
@@ -86,7 +91,8 @@ fn tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "required": ["title"], "properties": {
                 "title": { "type": "string", "description": "Short title, at most 200 characters." },
                 "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Nodes the new node depends on (node references)." },
-                "dependants": { "type": "array", "items": { "type": "string" }, "description": "Existing nodes that should depend on the new node (node references)." }
+                "dependants": { "type": "array", "items": { "type": "string" }, "description": "Existing nodes that should depend on the new node (node references)." },
+                "node_type": { "type": "string", "description": "Name of a node type (see get_types). Default: the default type." }
             } }
         }),
         json!({
@@ -101,8 +107,11 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "link_nodes",
-            "description": "Make `from` depend on `to` (`to` must be done first). Refused if it would create a dependency cycle or if from == to. Linking twice is harmless.",
-            "inputSchema": { "type": "object", "required": ["from", "to"], "properties": { "from": node(node_help), "to": node(node_help) } }
+            "description": "Make `from` depend on `to` (`to` must be done first). Refused if it would create a dependency cycle or if from == to. Linking twice is harmless; linking an existing link with another `edge_type` changes its type.",
+            "inputSchema": { "type": "object", "required": ["from", "to"], "properties": {
+                "from": node(node_help), "to": node(node_help),
+                "edge_type": { "type": "string", "description": "Name of an edge type (see get_types). Default: depends_on." }
+            } }
         }),
         json!({
             "name": "unlink_nodes",
@@ -116,8 +125,62 @@ fn tools() -> Vec<Value> {
                 "node": node(node_help),
                 "x": { "type": "integer" },
                 "y": { "type": "integer" },
-                "with_subtree": { "type": "boolean", "description": "Also move the nodes anchored beneath it (default false: just this node)." }
+                "with_dependencies": { "type": "boolean", "description": "Also move the nodes it depends on, and what they depend on (default false: just this node)." }
             } }
+        }),
+        json!({
+            "name": "undo",
+            "description": "Undo your own latest change (the last batch this server session sent: a write tool, or apply_batch). Other people's and agents' changes are never undone. Fails if there is nothing to undo. Edits typed directly into a note in the web UI are not in this history.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "redo",
+            "description": "Redo the change you just undid. Fails if there is nothing to redo.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "get_types",
+            "description": "The node types and edge types of this graph with their styles, and the canvas `background` colour. Read this before styling.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "set_node_type",
+            "description": "Give a node a type (by name); \"default\" restores the default.",
+            "inputSchema": { "type": "object", "required": ["node", "node_type"], "properties": { "node": node(node_help), "node_type": { "type": "string" } } }
+        }),
+        json!({
+            "name": "upsert_node_type",
+            "description": "Create a node type, or change the one with this `name`; only the fields you give change. Colours are #rrggbb. `bg` and `fg` (box fill and title colour) must be given together and need a contrast of at least 4.5:1. `border_width` is clamped to 0-10.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": {
+                "name": { "type": "string", "description": "Handle: lowercase a-z, 0-9, _ - ." },
+                "new_name": { "type": "string", "description": "Rename the type." },
+                "shape": { "type": "string", "enum": ["rect", "pill", "ellipse", "hexagon", "rhombus"] },
+                "bg": { "type": "string" }, "fg": { "type": "string" }, "border": { "type": "string" },
+                "border_width": { "type": "integer", "minimum": 0, "maximum": 10 },
+                "corners": { "type": "string", "enum": ["round", "square"], "description": "Corner style of rect, hexagon and rhombus shapes." }
+            } }
+        }),
+        json!({
+            "name": "upsert_edge_type",
+            "description": "Create an edge type, or change the one with this `name`; only the fields you give change. Colours are #rrggbb and are drawn on the canvas background (see get_types): `color` (the line) needs a contrast of at least 3:1 and `text_color` (the label) at least 4.5:1. `width` is clamped to 1-10. `start` is the end at the dependant, `end` at the dependency.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": {
+                "name": { "type": "string" }, "new_name": { "type": "string" }, "label": { "type": "string" },
+                "color": { "type": "string" }, "text_color": { "type": "string" },
+                "width": { "type": "integer", "minimum": 1, "maximum": 10 },
+                "line_style": { "type": "string", "enum": ["solid", "dashed", "dotted"] },
+                "start": { "type": "string", "enum": ["none", "arrow", "dot", "bar"] },
+                "end": { "type": "string", "enum": ["none", "arrow", "dot", "bar"] }
+            } }
+        }),
+        json!({
+            "name": "remove_node_type",
+            "description": "Remove a node type; nodes that used it show the default style. The default type cannot be removed.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } }
+        }),
+        json!({
+            "name": "remove_edge_type",
+            "description": "Remove an edge type; links that used it show the default style. The default type cannot be removed.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } }
         }),
         json!({
             "name": "set_note",
@@ -131,9 +194,9 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "apply_batch",
-            "description": "Apply several operations atomically (all or none), at most 100. Each op is an object with an `op` field: create_node {title, depends_on?, dependants?}, rename_node {node, title}, delete_node {node}, link {from, to}, unlink {from, to}, move_node {node, x, y, with_subtree?}, set_note {node, body}, append_note {node, text}. A node created earlier in the batch can be referenced as \"$N\" where N is the index of its create_node op.",
+            "description": "Apply several operations atomically (all or none), at most 100. Each op is an object with an `op` field: create_node {title, depends_on?, dependants?}, rename_node {node, title}, delete_node {node}, link {from, to}, unlink {from, to}, move_node {node, x, y, with_dependencies?}, set_note {node, body}, append_note {node, text}. A node created earlier in the batch can be referenced as \"$N\" where N is the index of its create_node op.",
             "inputSchema": { "type": "object", "required": ["ops"], "properties": {
-                "ops": { "type": "array", "items": { "type": "object", "required": ["op"], "properties": { "op": { "type": "string", "enum": ["create_node", "rename_node", "delete_node", "link", "unlink", "move_node", "set_note", "append_note"] } } } },
+                "ops": { "type": "array", "items": { "type": "object", "required": ["op"], "properties": { "op": { "type": "string", "enum": ["create_node", "rename_node", "delete_node", "link", "unlink", "move_node", "set_node_type", "upsert_node_type", "upsert_edge_type", "remove_node_type", "remove_edge_type", "set_note", "append_note"] } } } },
                 "label": { "type": "string", "description": "Optional note on what this batch is for." }
             } }
         }),
@@ -161,11 +224,16 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
     let graph = encode(&cfg.graph);
     let base = format!("/api/graphs/{graph}");
     // Write tools are all one batch of one op.
-    let one = |op: Value| backend.post(&format!("{base}/apply"), &json!({ "ops": [op] }));
+    let one = |mut op: Value| {
+        // Optional arguments the caller left out are left out of the op, not sent as null.
+        op.as_object_mut().map(|o| o.retain(|_, v| !v.is_null()));
+        backend.post(&format!("{base}/apply"), &json!({ "ops": [op] }))
+    };
     let node = |a: &Value, n: &str| str_arg(a, n).map(str::to_owned);
 
     match name {
         "get_graph" => backend.get(&base),
+        "get_full_graph" => backend.get(&format!("{base}/full")),
         "get_dot" => backend.get_text(&format!("{base}/dot")),
         "get_conflicts" => backend.get(&format!("{base}/conflicts")),
         "search_nodes" => {
@@ -187,12 +255,13 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
             "title": str_arg(args, "title")?,
             "depends_on": args.get("depends_on").cloned().unwrap_or(json!([])),
             "dependants": args.get("dependants").cloned().unwrap_or(json!([])),
+            "node_type": args.get("node_type"),
         }))
         .map(|r| r["results"][0].clone()),
         "rename_node" => one(json!({ "op": "rename_node", "node": node(args, "node")?, "title": str_arg(args, "title")? }))
             .map(|r| r["results"][0].clone()),
         "delete_node" => one(json!({ "op": "delete_node", "node": node(args, "node")? })).map(|r| r["results"][0].clone()),
-        "link_nodes" => one(json!({ "op": "link", "from": node(args, "from")?, "to": node(args, "to")? }))
+        "link_nodes" => one(json!({ "op": "link", "from": node(args, "from")?, "to": node(args, "to")?, "edge_type": args.get("edge_type") }))
             .map(|r| r["results"][0].clone()),
         "unlink_nodes" => one(json!({ "op": "unlink", "from": node(args, "from")?, "to": node(args, "to")? }))
             .map(|r| r["results"][0].clone()),
@@ -201,9 +270,18 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
             "node": node(args, "node")?,
             "x": args.get("x").and_then(Value::as_i64).ok_or("missing integer argument `x`")?,
             "y": args.get("y").and_then(Value::as_i64).ok_or("missing integer argument `y`")?,
-            "with_subtree": args.get("with_subtree").and_then(Value::as_bool).unwrap_or(false),
+            "with_dependencies": args.get("with_dependencies").or(args.get("with_subtree")).and_then(Value::as_bool).unwrap_or(false),
         }))
         .map(|r| r["results"][0].clone()),
+        "undo" | "redo" => backend.post(&format!("{base}/{name}"), &json!({})),
+        "get_types" => backend.get(&format!("{base}/types")),
+        "set_node_type" => one(json!({ "op": "set_node_type", "node": node(args, "node")?, "node_type": str_arg(args, "node_type")? }))
+            .map(|r| r["results"][0].clone()),
+        "upsert_node_type" | "upsert_edge_type" | "remove_node_type" | "remove_edge_type" => {
+            let mut op = args.clone();
+            op["op"] = json!(name);
+            one(op).map(|r| r["results"][0].clone())
+        }
         "set_note" => one(json!({ "op": "set_note", "node": node(args, "node")?, "body": str_arg(args, "body")? }))
             .map(|r| r["results"][0].clone()),
         "append_note" => one(json!({ "op": "append_note", "node": node(args, "node")?, "text": str_arg(args, "text")? }))
@@ -337,7 +415,7 @@ mod tests {
                 assert!(t["inputSchema"]["properties"][req.as_str().unwrap()].is_object(), "{}: {req}", t["name"]);
             }
         }
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 24);
     }
 
     #[test]

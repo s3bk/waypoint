@@ -35,6 +35,8 @@ pub struct Room {
     /// anywhere in the document, so after each client update this is written back
     /// if the document disagrees.
     title: Mutex<String>,
+    /// The canvas colour, owner-only in the same way.
+    background: Mutex<String>,
 }
 
 const MAX_GRAPH_TITLE: usize = 80;
@@ -75,8 +77,10 @@ impl Room {
         }
 
         let (relay, _) = broadcast::channel(1024);
-        let title = Mutex::new(graph.snapshot().title);
-        let room = Arc::new(Self { id: id.to_owned(), graph, relay, store, edit_lock: Mutex::new(()), unsaved, title });
+        let first = graph.snapshot();
+        let (title, background) = (Mutex::new(first.title), Mutex::new(first.background));
+        let room =
+            Arc::new(Self { id: id.to_owned(), graph, relay, store, edit_lock: Mutex::new(()), unsaved, title, background });
         room.assign_keys();
         room.repair(); // a stale client may have re-merged something invalid before the last shutdown
         room.maybe_compact();
@@ -112,6 +116,10 @@ impl Room {
         if snapshot.title != title {
             writes.push(Write::SetGraphTitle { title }); // someone without the owner key changed it
         }
+        let background = self.background.lock().expect("background lock").clone();
+        if snapshot.background != background {
+            writes.push(Write::SetBackground { color: background });
+        }
         if !writes.is_empty() {
             self.broadcast(self.graph.apply_writes(&writes));
         }
@@ -122,14 +130,15 @@ impl Room {
     ///
     /// `actor` names who is acting: the batch goes into that actor's undo
     /// history and the change log.
-    pub fn apply(&self, batch: &Batch, actor: &str) -> Result<Vec<serde_json::Value>, OpError> {
+    pub fn apply(&self, batch: &Batch, actor: impl Into<Peer>) -> Result<Vec<serde_json::Value>, OpError> {
+        let actor = &actor.into();
         let _editing = self.edit_lock.lock().expect("edit lock");
         self.assign_keys(); // so nodes added by clients can be named by key
         let plan = ops::plan(&self.graph.snapshot(), &batch.ops)?;
         if !plan.writes.is_empty() {
             let ops: Vec<_> = plan.results.iter().map(|r| r["op"].clone()).collect();
             let entry = log_entry(actor, "apply", batch.label.as_deref(), serde_json::json!(ops));
-            self.broadcast(self.graph.apply_writes_as(actor, entry, &plan.writes));
+            self.broadcast(self.graph.apply_writes_as(&actor.id, entry, &plan.writes));
         }
         self.assign_keys();
         let after = self.graph.snapshot();
@@ -146,20 +155,52 @@ impl Room {
     }
 
     /// Set the graph's title (the caller has checked that they hold the owner key).
-    pub fn set_title(&self, actor: &str, title: &str) -> Result<String, String> {
+    pub fn set_title(&self, actor: impl Into<Peer>, title: &str) -> Result<String, String> {
+        let actor = &actor.into();
         let title = normalize_graph_title(title)?;
         let _editing = self.edit_lock.lock().expect("edit lock");
         *self.title.lock().expect("title lock") = title.clone();
         let entry = log_entry(actor, "title", Some(&title), serde_json::json!([]));
-        self.broadcast(self.graph.apply_writes_as(actor, entry, &[Write::SetGraphTitle { title: title.clone() }]));
+        self.broadcast(self.graph.apply_writes_as(&actor.id, entry, &[Write::SetGraphTitle { title: title.clone() }]));
         Ok(title)
     }
 
+    /// Set the canvas colour (the caller has checked the owner key). Edge colours and text
+    /// must stay readable on it, so edge types that would not be are recoloured black or
+    /// white in the same change. Returns the colour and the names of the types it changed.
+    pub fn set_background(&self, actor: impl Into<Peer>, color: &str) -> Result<(String, Vec<String>), String> {
+        let actor = &actor.into();
+        use waypoint_model::style::{Kind, check_contrast, check_line_contrast, readable_on};
+        let color = waypoint_model::style::normalize_color(color)?;
+        let _editing = self.edit_lock.lock().expect("edit lock");
+        let readable = readable_on(&color);
+        let mut writes = vec![Write::SetBackground { color: color.clone() }];
+        let mut changed = Vec::new();
+        for t in &self.graph.snapshot().edge_types {
+            let mut fields = Vec::new();
+            if check_line_contrast("", &color, &t.color).is_err() {
+                fields.push(("color".to_owned(), serde_json::json!(readable)));
+            }
+            if check_contrast("", &color, &t.text_color).is_err() {
+                fields.push(("text_color".to_owned(), serde_json::json!(readable)));
+            }
+            if !fields.is_empty() {
+                changed.push(t.name.clone());
+                writes.push(Write::UpsertType { kind: Kind::Edge, id: t.id, fields });
+            }
+        }
+        *self.background.lock().expect("background lock") = color.clone();
+        let entry = log_entry(actor, "background", Some(&color), serde_json::json!([]));
+        self.broadcast(self.graph.apply_writes_as(&actor.id, entry, &writes));
+        Ok((color, changed))
+    }
+
     /// Undo or redo the actor's latest batch. `false` if there was nothing to do.
-    pub fn undo(&self, actor: &str, redo: bool) -> bool {
+    pub fn undo(&self, actor: impl Into<Peer>, redo: bool) -> bool {
+        let actor = &actor.into();
         let _editing = self.edit_lock.lock().expect("edit lock");
         let entry = log_entry(actor, if redo { "redo" } else { "undo" }, None, serde_json::json!([]));
-        match self.graph.undo_as(actor, redo, entry) {
+        match self.graph.undo_as(&actor.id, redo, entry) {
             Some(update) => {
                 self.broadcast(update);
                 self.repair_locked();
@@ -184,10 +225,33 @@ impl Room {
     }
 }
 
+/// Who is acting. The `id` is what identifies a peer (it keys the peer's undo history and tells
+/// entries of the change log apart); the `name` is whatever the peer calls itself, for people to
+/// read. Names are not unique and prove nothing: two peers may share one, and each is still
+/// someone else as far as undo goes. A caller that sends no id is known by its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Peer {
+    pub id: String,
+    pub name: String,
+}
+
+impl Peer {
+    #[cfg(test)]
+    pub fn new(id: &str, name: &str) -> Self {
+        Self { id: id.to_owned(), name: name.to_owned() }
+    }
+}
+
+impl From<&str> for Peer {
+    fn from(name: &str) -> Self {
+        Self { id: format!("name:{name}"), name: name.to_owned() }
+    }
+}
+
 /// One change-log entry, as the JSON string stored in the document.
-fn log_entry(actor: &str, kind: &str, label: Option<&str>, ops: serde_json::Value) -> String {
+fn log_entry(peer: &Peer, kind: &str, label: Option<&str>, ops: serde_json::Value) -> String {
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    serde_json::json!({ "actor": actor, "kind": kind, "label": label, "ops": ops, "at": at }).to_string()
+    serde_json::json!({ "peer": peer.id, "actor": peer.name, "kind": kind, "label": label, "ops": ops, "at": at }).to_string()
 }
 
 pub struct Rooms {
@@ -394,6 +458,25 @@ mod tests {
     }
 
     #[test]
+    fn peers_with_the_same_name_are_still_different_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let room = rooms_at(&dir.path().join("w.db")).get("peers").unwrap();
+        let (one, two) = (Peer::new("p1", "alex"), Peer::new("p2", "alex"));
+        let add = |title: &str, who: &Peer| {
+            room.apply(&batch(serde_json::json!([{ "op": "create_node", "title": title }])), who.clone()).unwrap();
+        };
+        add("from one", &one);
+        add("from two", &two);
+        assert!(room.undo(one.clone(), false));
+        let left: Vec<_> = room.graph.snapshot().nodes.values().map(|n| n.title.clone()).collect();
+        assert_eq!(left, ["from two"], "undo touched only the peer that asked");
+        assert!(!room.undo(one.clone(), false));
+        let log = room.graph.log();
+        assert!(log.iter().all(|e| e["actor"] == "alex"));
+        assert_eq!(log.iter().map(|e| e["peer"].as_str().unwrap()).collect::<Vec<_>>(), ["p1", "p2", "p1"]);
+    }
+
+    #[test]
     fn graph_ids_are_validated() {
         assert!(valid_graph_id("demo"));
         assert!(valid_graph_id("my-graph_2"));
@@ -401,5 +484,28 @@ mod tests {
         assert!(!valid_graph_id("a/b"));
         assert!(!valid_graph_id("../x"));
         assert!(!valid_graph_id(&"x".repeat(65)));
+    }
+
+    #[test]
+    fn background_is_owner_set_and_edges_stay_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let rooms = rooms_at(&dir.path().join("w.db"));
+        let room = rooms.get("g1").unwrap();
+        assert!(room.set_background("owner", "blue").is_err());
+        // The default edge colours are light, so a light canvas recolours them.
+        let (color, changed) = room.set_background("owner", "#F0F0F0").unwrap();
+        assert_eq!((color.as_str(), changed.as_slice()), ("#f0f0f0", ["depends_on".to_owned()].as_slice()));
+        let snap = room.graph.snapshot();
+        assert_eq!(snap.background, "#f0f0f0");
+        assert_eq!((snap.edge_types[0].color.as_str(), snap.edge_types[0].text_color.as_str()), ("#000000", "#000000"));
+        // A dark canvas needs no change to dark-on-dark ... but black lines are now too dark, so they flip.
+        assert_eq!(room.set_background("owner", "#202020").unwrap().1, ["depends_on".to_owned()]);
+
+        // A client writing the colour straight into the document is put back.
+        let rogue = Graph::new();
+        rogue.apply_writes(&[Write::SetBackground { color: "#ffffff".into() }]);
+        room.graph.apply_update(&rogue.encode_state()).unwrap();
+        room.repair();
+        assert_eq!(room.graph.snapshot().background, "#202020");
     }
 }

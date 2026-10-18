@@ -239,6 +239,28 @@ impl Page {
         chain.release().perform().await.expect("drag");
     }
 
+    /// Like [`Page::drag`], with Shift held for the whole gesture.
+    pub async fn drag_shift(&self, from: (i64, i64), to: (i64, i64)) {
+        let mut chain = self.driver.action_chain().key_down(Key::Shift).move_to(from.0, from.1).click_and_hold();
+        for i in 1..=6 {
+            chain = chain.move_to(from.0 + (to.0 - from.0) * i / 6, from.1 + (to.1 - from.1) * i / 6);
+        }
+        chain.release().key_up(Key::Shift).perform().await.expect("shift drag");
+    }
+
+    /// Press Shift only after the drag has started, and release it before the drop is over.
+    pub async fn drag_shift_midway(&self, from: (i64, i64), to: (i64, i64)) {
+        let mut chain = self.driver.action_chain().move_to(from.0, from.1).click_and_hold();
+        for i in 1..=3 {
+            chain = chain.move_to(from.0 + (to.0 - from.0) * i / 6, from.1 + (to.1 - from.1) * i / 6);
+        }
+        chain = chain.key_down(Key::Shift);
+        for i in 4..=6 {
+            chain = chain.move_to(from.0 + (to.0 - from.0) * i / 6, from.1 + (to.1 - from.1) * i / 6);
+        }
+        chain.release().key_up(Key::Shift).perform().await.expect("shift drag");
+    }
+
     /// Type into the title box that is open, and press Enter.
     pub async fn type_title(&self, text: &str) {
         until("the title box", || async { self.editing().await.is_some() }).await;

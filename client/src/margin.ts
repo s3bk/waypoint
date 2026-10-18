@@ -55,12 +55,48 @@ export function setupMargin(root: HTMLElement, hooks: MarginHooks) {
     return `${k !== undefined ? `#${k} ` : ""}${graph.title(id) || "untitled"}`;
   };
 
+  /** Text offset of a (node, offset) point inside `box`. */
+  function offsetOf(box: HTMLElement, node: Node, offset: number): number {
+    const r = document.createRange();
+    r.selectNodeContents(box);
+    r.setEnd(node, offset);
+    return r.toString().length;
+  }
+
+  /** The caret or selection as text offsets, or null when it is not in `box`. */
+  function readSelection(box: HTMLElement): [number, number] | null {
+    const s = getSelection();
+    if (!s || !s.anchorNode || !s.focusNode || !box.contains(s.anchorNode) || !box.contains(s.focusNode)) return null;
+    const a = offsetOf(box, s.anchorNode, s.anchorOffset);
+    const f = offsetOf(box, s.focusNode, s.focusOffset);
+    return [Math.min(a, f), Math.max(a, f)];
+  }
+
+  function writeSelection(box: HTMLElement, from: number, to: number) {
+    const point = (index: number): [Node, number] => {
+      const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+      let left = index;
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const len = n.textContent!.length;
+        if (left <= len) return [n, left];
+        left -= len;
+      }
+      return [box, box.childNodes.length];
+    };
+    const r = document.createRange();
+    r.setStart(...point(from));
+    r.setEnd(...point(to));
+    const s = getSelection()!;
+    s.removeAllRanges();
+    s.addRange(r);
+  }
+
   /** Make `box` show and edit `text`: typing becomes a minimal Yjs edit; remote edits update the box and keep the cursor. */
-  function bind(box: HTMLTextAreaElement, text: Y.Text): () => void {
-    box.value = text.toString();
+  function bind(box: HTMLElement, text: Y.Text): () => void {
+    box.textContent = text.toString();
     const onInput = () => {
       const was = text.toString();
-      const now = box.value;
+      const now = box.textContent ?? "";
       let start = 0;
       while (start < was.length && start < now.length && was[start] === now[start]) start++;
       let end = 0;
@@ -73,9 +109,9 @@ export function setupMargin(root: HTMLElement, hooks: MarginHooks) {
     };
     const onRemote = (event: Y.YTextEvent) => {
       if (event.transaction.origin === box) return;
-      const [a, b] = [box.selectionStart, box.selectionEnd];
-      box.value = text.toString();
-      box.setSelectionRange(mapIndex(event.delta, a), mapIndex(event.delta, b));
+      const sel = readSelection(box);
+      box.textContent = text.toString();
+      if (sel) writeSelection(box, mapIndex(event.delta, sel[0]), mapIndex(event.delta, sel[1]));
     };
     box.addEventListener("input", onInput);
     text.observe(onRemote);
@@ -91,10 +127,11 @@ export function setupMargin(root: HTMLElement, hooks: MarginHooks) {
     root.replaceChildren();
     root.append(el("h3"));
     const text = graph.noteText(sel);
-    const box = el("textarea", "note-editor");
+    const box = el("div", "note-editor");
     box.spellcheck = false;
-    box.placeholder = hooks.canEdit ? "Notes for this node. Everyone sees edits as you type." : "No note.";
-    box.readOnly = !hooks.canEdit || !text;
+    // Plain text only: no pasted markup, and Enter inserts "\n".
+    box.contentEditable = hooks.canEdit && text ? "plaintext-only" : "false";
+    box.dataset.placeholder = hooks.canEdit ? "Notes for this node. Everyone sees edits as you type." : "No note.";
     if (text) unbind = bind(box, text);
     root.append(box, el("div", "neighbours"));
   }
@@ -139,7 +176,7 @@ export function setupMargin(root: HTMLElement, hooks: MarginHooks) {
       unbind = null;
       root.replaceChildren();
     }
-    root.style.display = sel ? "block" : "none";
+    root.style.display = sel ? "flex" : "none";
     if (!sel) return;
     if (!root.querySelector(".note-editor") || (graph.noteText(sel) && !unbind && hooks.canEdit)) {
       drawEditor(sel);

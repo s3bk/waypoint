@@ -8,7 +8,8 @@
 //! - **invalid anchors**: a node anchored to something that is no longer its
 //!   neighbour is re-anchored (the layout crate's `repair_anchors`).
 //!
-//! - **overlaps**: the newer of two overlapping nodes is pushed away.
+//! - **overlaps**: the newer of two overlapping nodes is pushed away;
+//! - **dangling links**: a link to a node that was deleted (or never existed) is removed.
 //!
 //! The server is the only repair writer, and a
 //! repaired document needs no further repair, so running it again is a no-op.
@@ -23,6 +24,11 @@ use crate::graph::{Snapshot, Write};
 /// The writes that bring `snap` back to a valid state; empty if it already is.
 pub fn plan(snap: &Snapshot) -> Vec<Write> {
     let mut writes = Vec::new();
+
+    // Links whose end is gone: a link added to a node that someone else had just deleted.
+    for &(from, to) in &snap.dangling {
+        writes.push(Write::Unlink { from, to });
+    }
 
     // Dependency cycles.
     let mut edges: Vec<(NodeId, NodeId)> = snap.edges.iter().map(|e| (e.from, e.to)).collect();
@@ -326,5 +332,21 @@ mod tests {
         repair(&server);
         assert_eq!(server.places()[&late], Place::at_origin(Vec2::new(200, 50)), "valid, and not moved");
         assert!(repair(&server).is_empty());
+    }
+
+    #[test]
+    fn a_link_to_a_deleted_node_is_removed() {
+        let (alice, bob) = (Graph::new(), Graph::new());
+        let a = node(&alice, "a", Place::at_origin(Vec2::new(0, 0)));
+        let b = node(&alice, "b", Place { anchor: Some(a), off: Vec2::new(240, 0) });
+        bob.apply_update(&alice.encode_state()).unwrap();
+        // Alice deletes b while bob links a to it.
+        alice.apply_writes(&[Write::DeleteNode { id: b }]);
+        bob.create_edge(a, b, EdgeTypeId::DEPENDS_ON);
+        alice.apply_update(&bob.encode_state()).unwrap();
+        assert_eq!(alice.snapshot().dangling, vec![(a, b)]);
+        alice.apply_writes(&plan(&alice.snapshot()));
+        assert!(alice.snapshot().dangling.is_empty(), "the link is gone");
+        assert!(plan(&alice.snapshot()).is_empty(), "and repair is done");
     }
 }

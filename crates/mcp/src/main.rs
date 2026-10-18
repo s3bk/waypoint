@@ -18,8 +18,10 @@ struct Http {
     agent: ureq::Agent,
     /// `Authorization` header value.
     auth: String,
-    /// `X-Waypoint-Actor` header value.
+    /// `X-Waypoint-Actor` header value: the name this process gives itself.
     actor: String,
+    /// `X-Waypoint-Peer` header value: this process's id, which keys its undo history. Names may repeat; this does not.
+    peer: String,
 }
 
 impl Http {
@@ -54,7 +56,7 @@ impl Backend for Http {
     }
 
     fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
-        Self::finish(self.agent.post(&format!("{}{path}", self.base)).set("Authorization", &self.auth).set("X-Waypoint-Actor", &self.actor).send_json(body))
+        Self::finish(self.agent.post(&format!("{}{path}", self.base)).set("Authorization", &self.auth).set("X-Waypoint-Actor", &self.actor).set("X-Waypoint-Peer", &self.peer).send_json(body))
     }
 }
 
@@ -69,6 +71,10 @@ fn main() {
         agent: ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build(),
         auth: format!("Bearer {}", key.trim()),
         actor: std::env::var("WAYPOINT_ACTOR").unwrap_or_else(|_| "agent".into()),
+        peer: {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+            format!("mcp-{:x}-{nanos:x}", std::process::id())
+        },
     };
     // The graph is named by its viewer key, which every key can derive; the
     // server does that for us and tells us the role while it is at it.

@@ -37,15 +37,18 @@ One Yjs document per graph:
   pair of its ends**, so the key is `"{from}>{to}"` and there is at most one
   edge per ordered pair: two people adding the same edge converge on one
   entry. The edge's type is a field (`type`, the stable id of an entry in
-  `config.edge_types`, not its name), not part of its identity. `A>B` and
+  `edge_types`, not its name), not part of its identity. `A>B` and
   `B>A` are different edges (for an acyclic type, both together would be a
   cycle). Older documents keyed edges `"{from}>{to}:{type_id}"`; readers go by
   the `from` and `to` fields, not the key, so both spellings are understood,
   an edge is live if any entry for its pair is live, and removing an edge marks
   every entry for the pair.
-- `config.edge_types`: `Y.Map<EdgeTypeId, Y.Map>`, a CRDT member like nodes
-  and edges: each field of an entry (`name`, `label`, flags, style) is its
-  own key, so renaming and restyling merge field by field.
+- `node_types`, `edge_types`: `Y.Map<TypeId, Y.Map>`, the type registries. Each
+  field of an entry is its own key, so edits merge field by field. Only entries
+  that differ from the built-ins are stored (see "Node and edge types").
+- `meta`: `title` and `background` (both owner-only; the server writes them
+  back if another client changes them).
+- `log`: `Y.Array` of change-log entries (`peer`, `actor`, label, ops, time).
 - `notes`: `Y.Map<NoteId, Y.Map>` with `body` as `Y.Text`, so two people (or
   an agent and a person) can edit one note at the same time and both edits
   merge.
@@ -150,7 +153,7 @@ struct Edge {
     // no id: an edge is identified by (from, to)
     from: NodeId,
     to: NodeId,
-    type_id: EdgeTypeId,     // stable id of an entry in config.edge_types; a field, not identity
+    type_id: EdgeTypeId,     // stable id of an entry in edge_types; a field, not identity
     conflicted: bool,        // set by server when it closes a dependency cycle
     created_by: Actor,
 }
@@ -171,97 +174,44 @@ enum Actor {
 }
 ```
 
-### Edge types and the edge-type registry **(decision)**
+### Node and edge types **(implemented)**
 
-An edge points to its type by a **stable id**, and the type's **name** is a
-mutable field on the registry entry. That is what makes a rename atomic: it
-is one field write on one registry entry. No edge is touched, so there is no
-window where some edges have the old name and some the new one, and a
-concurrent edge-add by someone else lands on the same type either way.
-(Had edges stored the name string, a rename would be a rewrite of every
-edge, which is neither atomic nor safe against concurrent adds.)
+Types only change how things look; they have no meaning for the logic. Every
+link counts as a dependency (cycle checks, layout) whatever its type. Both
+registries live in the document (`node_types`, `edge_types`) as
+`Y.Map<id, Y.Map>`, one key per field. An entry points to nothing; nodes carry
+`type` (a node type id) and edges carry `type` (an edge type id). Names are
+unique per kind: if two ids end up with one name, the earlier id keeps it and
+the later one is hidden. A rename is one field write.
 
-Names are still plain strings, so a new edge type needs no schema, server or
-client change. Humans and agents use the name; the server resolves name to
-`type_id` at the API boundary and creating an edge with an unknown name
-creates the type. What a type *means* is defined by its registry entry
-(`config.edge_types`), seeded with defaults and fully editable. Nothing about
-any type is hard-coded in the server.
+Only entries that differ from the built-ins are stored. The built-ins are the
+node type `default` (id `...0101`) and the edge type `depends_on` (id
+`...0001`); they cannot be removed. Removal of any other type sets a `removed`
+flag; nodes/edges using a missing or removed type fall back to the built-in.
+Readers sanitize every field and apply fallbacks, so a bad write from any
+client cannot break rendering.
 
-- **Name format:** lowercase `[a-z0-9_-]+`, optionally dot-namespaced, at most
-  64 chars; normalized by the server. Names are unique within a graph.
-- **Ids:** UUIDv7 for user-created types. The seeded defaults get fixed,
-  well-known ids (the same in every graph) so a fresh graph's `depends_on`
-  type is `depends_on` internally too; users can still rename it.
-- **Registry entry:**
+**Node type:** `name`, `shape` (rect, pill, ellipse, hexagon, rhombus),
+`corners` (round or square; used by rect, hexagon, rhombus), `bg` and `fg`
+(set together; contrast at least 4.5:1), `border` color, `border_width`
+(clamped 0-10, always solid). A legacy shape `rounded` reads as rect with round
+corners.
 
-```rust
-struct EdgeTypeDef {
-    id: EdgeTypeId,              // stable; what edges point to
-    name: String,                // unique handle used by people/agents; renamable
-    label: String,               // "depends on"
-    inverse_label: Option<String>, // "blocks"; shown from the `to` end
-    directed: bool,              // false: no arrowhead, from/to order irrelevant
-    blocks: bool,                // `from` cannot be ready until `to` is done
-    acyclic: bool,               // cycles are flagged `conflicted`
-    transitive_reduce: bool,     // hide edges implied by a longer path (display)
-    style: EdgeStyle,            // color, dash, width, arrow shape
-    show_label: bool,            // draw the label on the edge
-}
-```
+**Edge type:** `name`, `label` (may be empty, at most 40 chars; empty draws
+nothing), `color` (at least 3:1 against the canvas), `text_color` (at least
+4.5:1 against the canvas), `width` (clamped 1-10), `line_style` (solid, dashed,
+dotted), `start` and `end` arrows (none, arrow, dot, bar).
 
-  The server's graph logic reads only these flags: `ready`, `blocked_by`,
-  layers and the critical path follow edges whose def has `blocks: true`;
-  the post-merge cycle check runs on types with `acyclic: true`. Renaming
-  `depends_on`, turning `blocks` off, or making `related` acyclic all just
-  work, because the flags are the behavior.
-- **Defaults seeded into a new graph:**
+**Canvas background** (`meta.background`, default `#14161a`) is set only by
+the owner (`PUT /background`). Edge types that no longer read on the new
+background are recolored black or white and listed in the reply, so a change of
+background never blocks.
 
-  | name | label / inverse | directed | blocks | acyclic |
-  |---|---|---|---|---|
-  | `depends_on` | depends on / blocks | yes | yes | yes |
-  | `related` | related to | no | no | no |
-  | `duplicates` | duplicates / duplicated by | yes | no | yes |
-  | `follows_up` | follows up / followed up by | yes | no | yes |
-
-  `duplicates` and `follows_up` are examples of "just data": a graph can drop
-  them.
-- **Unknown names:** when a human types or an agent sends an edge name that
-  matches no type, the server creates a type with fallback settings
-  (directed, non-blocking, non-acyclic, label = the name, neutral style).
-  The UI marks it "unconfigured" so it can be styled. Agents only get this
-  if the batch sets `allow_new_edge_types`, otherwise the op fails.
-- **Concurrent creation of the same name.** Two peers can create a type
-  named `reviews` at once, giving two entries with different ids. After merge
-  the server repairs it: the entry with the earliest id (UUIDv7 is
-  time-ordered, ties broken by id) is canonical; edges of the other are
-  repointed to it, and if that makes two edges collide on the same key the
-  extra is soft-deleted; the duplicate entry is marked `merged_into` and
-  hidden. This is the same post-merge repair as for cycles, and it is
-  recorded in the change log. The same repair covers a rename that collides
-  with an existing name: the later rename is reverted to a free name
-  (`name-2`) and flagged.
-- **Edits to the registry** are ordinary document edits (CRDT, per-field
-  merge), by humans in a settings panel or by agents via ops
-  (`UpsertEdgeType`, `RenameEdgeType`, `RemoveEdgeType`). Because meaning is derived from flags
-  at read time, changing a flag re-interprets existing edges immediately; no
-  edge is rewritten. Turning `acyclic` on for a kind that already has a cycle
-  flags the cycle's newest edge rather than rejecting the change.
-- **Removing a def** leaves its edges in place; they point to a missing id
-  and fall back to the unknown-name settings above. Removing `depends_on` therefore makes
-  everything "ready", which is allowed (it is the graph's choice), and the UI
-  warns before it.
-- **"Blocks" is never stored:** it is `depends_on` read from the `to` end via
-  `inverse_label`. Any directed kind gets this for free.
-- Duplicate edges (same from and to) cannot exist; the key is derived from the
-  pair, so a repeat add is a no-op. Consequently two nodes can be joined in a
-  given direction by one type only; to relate them differently, change the
-  edge's type.
-- Near-duplicate names ("depends-on" vs "depends_on") are possible because
-  names are free text. Agents are steered to reuse types via `edge_types()`
-  and `get_graph`; humans pick from the registry in the UI. Merging two types
-  is an explicit op, `MergeEdgeTypes { from, into }`, which repoints edges
-  atomically in one transaction.
+Ops: `upsert_node_type`, `upsert_edge_type` (only the changed fields are
+written), `remove_node_type`, `remove_edge_type`, `set_node_type`;
+`create_node.node_type`, `link.edge_type` (linking an existing pair with a new
+type retypes it). Each pair `(from, to)` has at most one edge, so two nodes are
+joined in a given direction by one type only.
 
 ### Sub-graphs **(decision)**
 
@@ -469,7 +419,11 @@ change log so "what did the agent change" can hide them and show only
 meaning changes (nodes, edges, notes, status). Undoing a batch restores the
 places of moved nodes along with it.
 
-### Per-graph config: kinds and statuses **(decision)**
+### Per-graph config: kinds and statuses **(decision, not built)**
+
+Not implemented. The per-graph registries that exist are `node_types` and
+`edge_types` (above); the `config` map described here is the plan for statuses
+and kinds, which would sit beside them.
 
 Node kinds and statuses are defined per graph, in a `config` map inside the
 document (so they sync and are edited like anything else). A new graph is
@@ -509,7 +463,6 @@ Rules:
   `Open` for derived values.
 - There must always be at least one status in each of Open and Done; the
   server re-adds the defaults if a merge empties them.
-- `config` also holds `edge_types`, the edge-type registry (see above).
 - Agents: `get_graph` returns the config, so an agent learns the valid
   statuses and kinds. `apply` rejects an unknown kind or status for an agent
   (the server can validate before applying); humans' direct edits can only
@@ -542,10 +495,11 @@ changes and the same change-log entries.
 **Implemented today** (`waypoint_model::Op`, planned by the server's `ops`
 module): `create_node {title, depends_on?, dependants?, x?, y?}` (`x`,`y`: top-left corner, used only when there are no dependencies or dependants), `rename_node`,
 `delete_node`, `link {from, to}`, `unlink {from, to}`,
-`move_node {node, x, y, with_subtree?}`, `set_note {node, body}`, `append_note {node, text}` (each node has one shared note). Nodes are named by reference (see
+`move_node {node, x, y, with_dependencies?}` (alias `with_subtree`; moves the node plus everything it depends on, transitively), `set_note {node, body}`, `append_note {node, text}` (each node has one shared note). Nodes are named by reference (see
 "Keys"); links by the ordered pair of their ends. The rest of the vocabulary
-below (kinds, statuses, scopes, edge-type registry ops, notes) is still to
-build.
+below (kinds, statuses, scopes) is still to build. Also implemented: `set_node_type`,
+`upsert_node_type`, `upsert_edge_type`, `remove_node_type`, `remove_edge_type`,
+`create_node.node_type`, `link.edge_type`.
 
 **A batch is all or nothing.** The server plans every op against a snapshot,
 using the layout crate for placement, make-room, re-anchoring and joining
@@ -566,9 +520,9 @@ enum Op {
     DeleteNode { id },            // soft delete; links hidden; chains through it bridged; see below
     RestoreNode { id },
 
+    // implemented as UpsertNodeType/UpsertEdgeType/Remove*/SetNodeType; see "Node and edge types"
     UpsertEdgeType { def },           // create or change a registry entry
     RenameEdgeType { id, name },      // one field write; atomic
-    MergeEdgeTypes { from, into },
     RemoveEdgeType { id },
     UpsertStatus { def }, RemoveStatus { id },   // same for kinds/statuses
     UpsertNodeKind { def }, RemoveNodeKind { id },
@@ -584,7 +538,6 @@ enum Op {
 struct Batch {
     graph: GraphId,
     ops: Vec<Op>,
-    allow_new_edge_types: bool,   // default false for agents
     label: Option<String>,        // "split auth into two tasks"; shown in history
 }
 ```
@@ -662,14 +615,20 @@ the server over HTTP, because the server owns the live shared documents):
 | `GET /nodes/{ref}` | `get_node` | the node, its position, `depends_on` and `dependants` |
 | `GET /nodes/{ref}/neighbours?direction=&depth=` | `get_neighbours` | subgraph up to depth 5 (max 200 nodes, `truncated` flag) |
 | `POST /apply` | `apply_batch` | per-op results, or 422 `{error, op_index}` |
-| `POST /undo`, `POST /redo` | (UI only) | `{ok:true}`, or 409 if nothing to undo/redo; undoes the caller's own latest batch |
+| `GET /full` | `get_full_graph` | the whole graph as JSON: nodes, links, notes, types, background |
+| `GET /types` | `get_types` | node and edge types, background |
+| `PUT /background`, `PUT /title` | (REST only; owner key) | the new value (background: also the edge types it recolored) |
+| (ops via `/apply`) | `set_node_type`, `upsert_node_type`, `upsert_edge_type`, `remove_node_type`, `remove_edge_type` | that op's result |
+| `POST /undo`, `POST /redo` | `undo`, `redo` | `{ok:true}`, or 409 if nothing to undo/redo; undoes the caller's own latest batch |
 | `GET /dot` | `get_dot` | the graph as Graphviz DOT text; `A -> B` means A depends on B |
 | `GET /log` | (UI only) | `{log:[{actor, kind, label, ops, at}]}`, one entry per batch |
 | (one-op batches) | `create_node`, `rename_node`, `delete_node`, `link_nodes`, `unlink_nodes`, `move_node` | that op's result |
 
-The actor is the `X-Waypoint-Actor` header (sanitized, at most 40 characters,
-default `anonymous`). It is a self-declared label, not an identity: it keys the
-change log and each actor's undo stack. Undo stacks live in memory and are lost
+A caller sends `X-Waypoint-Peer` (a random id per tab or MCP process) and
+`X-Waypoint-Actor` (a free-form name, sanitized, at most 40 characters, default
+`anonymous`; names may collide). Peers are identified by id: the id keys each
+peer's undo stack and the log's `peer` field; the name is only shown. Without an
+id the name stands in for it. Neither is a verified identity. Undo stacks live in memory and are lost
 when the server restarts; the log is kept in the document. Repair writes are
 not undoable.
 

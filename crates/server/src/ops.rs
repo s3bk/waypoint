@@ -11,13 +11,18 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use uuid::Uuid;
 use waypoint_layout as layout;
-use waypoint_model::{EdgeTypeId, NODE_HEIGHT, NODE_WIDTH, NodeId, Op, Place, Vec2};
+use waypoint_model::{
+    EdgeTypeId, NODE_HEIGHT, NODE_WIDTH, NodeId, Op, Place, Vec2,
+    style::{self, EdgeType, Kind, NodeType},
+};
 
-use crate::graph::{EdgeRec, NodeRec, Snapshot, Write};
+use crate::graph::{EdgeRec, NodeRec, Snapshot, Write, edge_diff, node_diff};
 
 pub const MAX_OPS: usize = 100;
 const MAX_TITLE: usize = 200;
 const MAX_NOTE: usize = 20_000;
+/// Types per registry.
+const MAX_TYPES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct OpError {
@@ -39,6 +44,9 @@ struct Work {
     edges: Vec<EdgeRec>,
     /// Set aside by the server for closing a cycle; they can only be removed.
     conflicted: Vec<EdgeRec>,
+    node_types: Vec<NodeType>,
+    edge_types: Vec<EdgeType>,
+    background: String,
     writes: Vec<Write>,
     /// The node each op created, by op index, for `$N` references.
     created: Vec<Option<NodeId>>,
@@ -62,6 +70,9 @@ pub fn plan(snapshot: &Snapshot, ops: &[Op]) -> Result<Plan, OpError> {
         places: snapshot.places(),
         edges: snapshot.edges.clone(),
         conflicted: snapshot.conflicted.clone(),
+        node_types: snapshot.node_types.clone(),
+        edge_types: snapshot.edge_types.clone(),
+        background: snapshot.background.clone(),
         writes: Vec::new(),
         created: Vec::with_capacity(ops.len()),
     };
@@ -160,14 +171,45 @@ impl Work {
         }
     }
 
+    fn node_type_named(&self, name: &str) -> Result<&NodeType, String> {
+        let n = style::normalize_name(name)?;
+        self.node_types.iter().find(|t| t.name == n).ok_or_else(|| {
+            let names: Vec<_> = self.node_types.iter().map(|t| t.name.as_str()).collect();
+            format!("no node type {n:?}; the types are {} (create one with upsert_node_type)", names.join(", "))
+        })
+    }
+
+    fn edge_type_named(&self, name: &str) -> Result<&EdgeType, String> {
+        let n = style::normalize_name(name)?;
+        self.edge_types.iter().find(|t| t.name == n).ok_or_else(|| {
+            let names: Vec<_> = self.edge_types.iter().map(|t| t.name.as_str()).collect();
+            format!("no edge type {n:?}; the types are {} (create one with upsert_edge_type)", names.join(", "))
+        })
+    }
+
+    /// Give `node` a type; the default type is stored as no type.
+    fn set_node_type(&mut self, node: NodeId, type_id: uuid::Uuid) {
+        let stored = (type_id != style::DEFAULT_NODE_TYPE).then_some(type_id);
+        self.writes.push(Write::SetNodeType { id: node, type_id: stored });
+        if let Some(n) = self.nodes.get_mut(&node) {
+            n.type_id = stored;
+        }
+    }
+
     /// Add "from depends on to", refusing self-links and cycles. Returns whether it was new.
-    fn link(&mut self, from: NodeId, to: NodeId) -> Result<bool, String> {
+    /// Linking an existing pair with another `type_id` changes its type.
+    fn link(&mut self, from: NodeId, to: NodeId, type_id: Option<EdgeTypeId>) -> Result<bool, String> {
         if from == to {
             return Err(format!("{} cannot depend on itself", self.name(from)));
         }
-        if self.edges.iter().any(|e| e.from == from && e.to == to) {
+        if let Some(existing) = self.edges.iter_mut().find(|e| e.from == from && e.to == to) {
+            if let Some(t) = type_id.filter(|t| *t != existing.type_id) {
+                existing.type_id = t;
+                self.writes.push(Write::Link { from, to, type_id: t });
+            }
             return Ok(false);
         }
+        let type_id = type_id.unwrap_or(EdgeTypeId::DEPENDS_ON);
         if layout::creates_cycle(&self.pairs(), from, to) {
             return Err(format!(
                 "{} depending on {} would create a dependency cycle ({} already depends on {}, directly or not)",
@@ -177,15 +219,16 @@ impl Work {
                 self.name(from)
             ));
         }
-        self.edges.push(EdgeRec { from, to, type_id: EdgeTypeId::DEPENDS_ON });
-        self.writes.push(Write::Link { from, to, type_id: EdgeTypeId::DEPENDS_ON });
+        self.edges.push(EdgeRec { from, to, type_id });
+        self.writes.push(Write::Link { from, to, type_id });
         Ok(true)
     }
 
     fn apply(&mut self, op: &Op) -> Result<Value, String> {
         let result = match op {
-            Op::CreateNode { title, depends_on, dependants, x, y } => {
+            Op::CreateNode { title, depends_on, dependants, x, y, node_type } => {
                 let title = normalize_title(title)?;
+                let node_type = node_type.as_deref().map(|n| self.node_type_named(n).map(|t| t.id)).transpose()?;
                 let deps = self.resolve_all(depends_on)?;
                 let dependants = self.resolve_all(dependants)?;
                 let id = NodeId::new();
@@ -209,15 +252,18 @@ impl Work {
                 let changes = layout::add_node(&self.places, &self.pairs(), id, parent, at);
                 let own = changes.iter().find(|(n, _)| *n == id).map(|(_, p)| *p).expect("add_node places the new node");
                 self.writes.push(Write::CreateNode { id, title: title.clone(), place: own });
-                self.nodes.insert(id, NodeRec { id, key: None, title: title.clone(), place: own, note: String::new() });
+                self.nodes.insert(id, NodeRec { id, key: None, title: title.clone(), place: own, note: String::new(), type_id: None });
                 self.created.push(Some(id)); // so the links below, and later ops, can name it
                 self.set_places(changes, Some(id));
+                if let Some(t) = node_type {
+                    self.set_node_type(id, t);
+                }
 
                 for dep in deps {
-                    self.link(id, dep)?;
+                    self.link(id, dep, None)?;
                 }
                 for d in dependants {
-                    self.link(d, id)?;
+                    self.link(d, id, None)?;
                 }
                 json!({ "op": "create_node", "id": id.0, "title": title })
             }
@@ -251,10 +297,75 @@ impl Work {
                 self.edges = remaining.into_iter().map(|(from, to, type_id)| EdgeRec { from, to, type_id }).collect();
                 json!({ "op": "delete_node", "deleted": name, "joined": bridges.len() })
             }
-            Op::Link { from, to } => {
+            Op::Link { from, to, edge_type } => {
                 let (from, to) = (self.resolve(from)?, self.resolve(to)?);
-                let added = self.link(from, to)?;
+                let type_id = edge_type.as_deref().map(|n| self.edge_type_named(n).map(|t| EdgeTypeId(t.id))).transpose()?;
+                let added = self.link(from, to, type_id)?;
                 json!({ "op": "link", "from": from.0, "to": to.0, "already_linked": !added })
+            }
+            Op::SetNodeType { node, node_type } => {
+                let id = self.resolve(node)?;
+                let t = self.node_type_named(node_type)?.clone();
+                self.set_node_type(id, t.id);
+                json!({ "op": "set_node_type", "id": id.0, "node_type": t.name })
+            }
+            Op::UpsertNodeType(spec) => {
+                let name = style::normalize_name(&spec.name)?;
+                let old = self.node_types.iter().find(|t| t.name == name).cloned();
+                let new = match &old {
+                    Some(old) => style::apply_node(old.clone(), spec)?,
+                    None if self.node_types.len() >= MAX_TYPES => return Err(format!("a graph may have at most {MAX_TYPES} node types")),
+                    None => style::new_node(spec)?,
+                };
+                if old.as_ref().is_none_or(|o| o.name != new.name) && self.node_types.iter().any(|t| t.name == new.name && t.id != new.id) {
+                    return Err(format!("there is already a node type named {:?}", new.name));
+                }
+                let fields = node_diff(old.as_ref(), &new);
+                if !fields.is_empty() {
+                    self.writes.push(Write::UpsertType { kind: Kind::Node, id: new.id, fields });
+                }
+                self.node_types.retain(|t| t.id != new.id);
+                self.node_types.push(new.clone());
+                json!({ "op": "upsert_node_type", "created": old.is_none(), "type": new })
+            }
+            Op::UpsertEdgeType(spec) => {
+                let name = style::normalize_name(&spec.name)?;
+                let old = self.edge_types.iter().find(|t| t.name == name).cloned();
+                let new = match &old {
+                    Some(old) => style::apply_edge(old.clone(), spec, &self.background)?,
+                    None if self.edge_types.len() >= MAX_TYPES => return Err(format!("a graph may have at most {MAX_TYPES} edge types")),
+                    None => style::new_edge(spec, &self.background)?,
+                };
+                if old.as_ref().is_none_or(|o| o.name != new.name) && self.edge_types.iter().any(|t| t.name == new.name && t.id != new.id) {
+                    return Err(format!("there is already an edge type named {:?}", new.name));
+                }
+                let fields = edge_diff(old.as_ref(), &new);
+                if !fields.is_empty() {
+                    self.writes.push(Write::UpsertType { kind: Kind::Edge, id: new.id, fields });
+                }
+                self.edge_types.retain(|t| t.id != new.id);
+                self.edge_types.push(new.clone());
+                json!({ "op": "upsert_edge_type", "created": old.is_none(), "type": new })
+            }
+            Op::RemoveNodeType { name } => {
+                let t = self.node_type_named(name)?.clone();
+                if t.id == style::DEFAULT_NODE_TYPE {
+                    return Err("the default node type cannot be removed (change its style instead)".into());
+                }
+                self.writes.push(Write::RemoveType { kind: Kind::Node, id: t.id });
+                self.node_types.retain(|x| x.id != t.id);
+                let users = self.nodes.values().filter(|n| n.type_id == Some(t.id)).count();
+                json!({ "op": "remove_node_type", "removed": t.name, "nodes_now_default": users })
+            }
+            Op::RemoveEdgeType { name } => {
+                let t = self.edge_type_named(name)?.clone();
+                if t.id == style::DEFAULT_EDGE_TYPE {
+                    return Err("the default edge type cannot be removed (change its style instead)".into());
+                }
+                self.writes.push(Write::RemoveType { kind: Kind::Edge, id: t.id });
+                self.edge_types.retain(|x| x.id != t.id);
+                let users = self.edges.iter().filter(|e| e.type_id.0 == t.id).count();
+                json!({ "op": "remove_edge_type", "removed": t.name, "edges_now_default": users })
             }
             Op::Unlink { from, to } => {
                 let (from, to) = (self.resolve(from)?, self.resolve(to)?);
@@ -273,9 +384,9 @@ impl Work {
                 self.set_places(changes, None);
                 json!({ "op": "unlink", "from": from.0, "to": to.0 })
             }
-            Op::MoveNode { node, x, y, with_subtree } => {
+            Op::MoveNode { node, x, y, with_dependencies } => {
                 let id = self.resolve(node)?;
-                let changes = layout::drop_node(&self.places, &self.pairs(), id, Vec2::new(*x, *y), *with_subtree);
+                let changes = layout::drop_node(&self.places, &self.pairs(), id, Vec2::new(*x, *y), *with_dependencies);
                 let moved = changes.len();
                 self.set_places(changes, None);
                 json!({ "op": "move_node", "id": id.0, "places_changed": moved })
@@ -595,5 +706,102 @@ mod tests {
         assert!(dot.starts_with("digraph waypoint {"));
         assert!(dot.contains("label=\"#1 say \\\"hi\\\"\""), "{dot}");
         assert_eq!(dot.matches("\" -> \"").count(), 1, "{dot}");
+    }
+
+    #[test]
+    fn node_types_are_created_styled_and_assigned() {
+        let g = Graph::new();
+        let r = run(&g, json!([
+            { "op": "upsert_node_type", "name": "Risk", "bg": "#7a1f1f", "fg": "#ffffff", "border": "#ff6b6b", "border_width": 3, "shape": "hexagon" },
+            { "op": "create_node", "title": "outage", "node_type": "risk" },
+            { "op": "create_node", "title": "plain" },
+        ])).unwrap();
+        assert_eq!(r[0]["created"], true);
+        let snap = g.snapshot();
+        assert_eq!(snap.node_types.len(), 2);
+        let risk = snap.node_types.iter().find(|t| t.name == "risk").unwrap();
+        assert_eq!((risk.shape.as_str(), risk.border_width, risk.bg.as_str()), ("hexagon", 3, "#7a1f1f"));
+        let by_title = |t: &str| snap.nodes.values().find(|n| n.title == t).unwrap().clone();
+        assert_eq!(snap.node_type(by_title("outage").type_id).name, "risk");
+        assert_eq!(snap.node_type(by_title("plain").type_id).name, "default");
+
+        // Changing one field leaves the others; removing the type puts its nodes back to default.
+        run(&g, json!([{ "op": "upsert_node_type", "name": "risk", "border_width": 99 }])).unwrap();
+        let snap = g.snapshot();
+        let risk = snap.node_types.iter().find(|t| t.name == "risk").unwrap();
+        assert_eq!((risk.border_width, risk.shape.as_str()), (10, "hexagon"), "width is clamped, shape kept");
+        run(&g, json!([{ "op": "remove_node_type", "name": "risk" }])).unwrap();
+        let snap = g.snapshot();
+        assert_eq!(snap.node_types.len(), 1);
+        assert_eq!(snap.node_type(by_title("outage").type_id).name, "default");
+        assert!(run(&g, json!([{ "op": "remove_node_type", "name": "default" }])).is_err());
+    }
+
+    #[test]
+    fn colours_must_come_in_pairs_and_contrast() {
+        let g = Graph::new();
+        let err = |op: Value| run(&g, json!([op])).unwrap_err().message;
+        assert!(err(json!({ "op": "upsert_node_type", "name": "a", "bg": "#000000" })).contains("together"));
+        assert!(err(json!({ "op": "upsert_node_type", "name": "a", "bg": "#777777", "fg": "#808080" })).contains("contrast"));
+        // Edge text and line must read on the document background (dark by default).
+        assert!(err(json!({ "op": "upsert_edge_type", "name": "e", "text_color": "#222222" })).contains("text_color"));
+        assert!(err(json!({ "op": "upsert_edge_type", "name": "e", "color": "#1a1c20" })).contains("color"));
+        assert!(g.snapshot().node_types.len() == 1 && g.snapshot().edge_types.len() == 1, "nothing was kept");
+    }
+
+    #[test]
+    fn edges_take_a_type_and_can_be_retyped() {
+        let g = Graph::new();
+        run(&g, json!([
+            { "op": "upsert_edge_type", "name": "blocks", "color": "#ffb454", "width": 0, "start": "dot", "end": "bar", "line_style": "dashed" },
+            { "op": "create_node", "title": "a" },
+            { "op": "create_node", "title": "b" },
+            { "op": "link", "from": "$1", "to": "$2", "edge_type": "blocks" },
+        ])).unwrap();
+        let snap = g.snapshot();
+        let e = snap.edge_type(snap.edges[0].type_id);
+        assert_eq!((e.name.as_str(), e.width, e.start.as_str(), e.end.as_str()), ("blocks", 1, "dot", "bar"));
+        let r = run(&g, json!([{ "op": "link", "from": "#1", "to": "#2", "edge_type": "depends_on" }])).unwrap();
+        assert_eq!(r[0]["already_linked"], true);
+        assert_eq!(g.snapshot().edge_type(g.snapshot().edges[0].type_id).name, "depends_on");
+        assert!(run(&g, json!([{ "op": "link", "from": "#1", "to": "#2", "edge_type": "nope" }])).unwrap_err().message.contains("no edge type"));
+    }
+
+    #[test]
+    fn a_partly_written_type_keeps_the_built_in_label() {
+        let g = Graph::new();
+        g.apply_writes(&[Write::UpsertType {
+            kind: Kind::Edge,
+            id: style::DEFAULT_EDGE_TYPE,
+            fields: vec![("color".into(), json!("#ffffff"))],
+        }]);
+        assert_eq!(g.snapshot().edge_types[0].label, "depends on");
+    }
+
+    #[test]
+    fn an_entry_written_with_the_old_rounded_shape_reads_as_rect_with_round_corners() {
+        let g = Graph::new();
+        let id = uuid::Uuid::now_v7();
+        g.apply_writes(&[Write::UpsertType {
+            kind: Kind::Node,
+            id,
+            fields: vec![("name".into(), json!("old")), ("shape".into(), json!("rounded")), ("border_style".into(), json!("dashed"))],
+        }]);
+        let snap = g.snapshot();
+        let t = snap.node_types.iter().find(|t| t.id == id).unwrap();
+        assert_eq!((t.shape.as_str(), t.corners.as_str()), ("rect", "round"));
+    }
+
+    #[test]
+    fn an_edge_type_may_have_no_label() {
+        let g = Graph::new();
+        run(&g, json!([{ "op": "upsert_edge_type", "name": "quiet", "label": "" }])).unwrap();
+        let snap = g.snapshot();
+        assert_eq!(snap.edge_types.iter().find(|t| t.name == "quiet").unwrap().label, "");
+        // And the default type can be silenced without losing its other settings.
+        run(&g, json!([{ "op": "upsert_edge_type", "name": "depends_on", "label": "" }])).unwrap();
+        let snap = g.snapshot();
+        let d = snap.edge_types.iter().find(|t| t.name == "depends_on").unwrap();
+        assert_eq!((d.label.as_str(), d.width), ("", 2));
     }
 }

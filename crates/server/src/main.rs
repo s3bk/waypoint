@@ -54,6 +54,7 @@ async fn main() {
         .route("/api/graphs", post(new_graph))
         .route("/api/graphs/{graph}", get(graph_summary))
         .route("/api/session", get(session))
+        .route("/api/graphs/{graph}/full", get(full_graph))
         .route("/api/graphs/{graph}/positions", get(positions))
         // The agent API (see crates/mcp): read the graph, and change it in atomic batches.
         .route("/api/graphs/{graph}/nodes", get(nodes_search))
@@ -66,6 +67,8 @@ async fn main() {
         .route("/api/graphs/{graph}/redo", post(redo))
         .route("/api/graphs/{graph}/log", get(change_log))
         .route("/api/graphs/{graph}/title", put(set_title))
+        .route("/api/graphs/{graph}/background", put(set_background))
+        .route("/api/graphs/{graph}/types", get(types))
         .route("/ws/{graph}", get(ws));
     // WAYPOINT_STATIC=client/dist makes this process serve the web client too.
     let router = match std::env::var("WAYPOINT_STATIC") {
@@ -140,6 +143,11 @@ async fn graph_summary(State(app): State<App>, headers: HeaderMap, Path(graph): 
     Ok(Json(api::summary(&room.graph.snapshot())))
 }
 
+/// The whole graph as JSON: nodes with notes and positions, links, set-aside links.
+async fn full_graph(State(app): State<App>, headers: HeaderMap, Path(graph): Path<String>) -> Result<Json<Value>, Response> {
+    Ok(Json(api::full(&access(&app, &headers, &graph, None, Role::Viewer)?.0.graph.snapshot())))
+}
+
 async fn conflicts(State(app): State<App>, headers: HeaderMap, Path(graph): Path<String>) -> Result<Json<Value>, Response> {
     Ok(Json(api::conflicts(&access(&app, &headers, &graph, None, Role::Viewer)?.0.graph.snapshot())))
 }
@@ -157,8 +165,31 @@ async fn set_title(
     Json(body): Json<TitleBody>,
 ) -> Result<Json<Value>, Response> {
     let (room, _) = access(&app, &headers, &graph, None, Role::Owner)?;
-    let title = room.set_title(&actor(&headers), &body.title).map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
+    let title = room.set_title(actor(&headers), &body.title).map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
     Ok(Json(json!({ "title": title })))
+}
+
+#[derive(Deserialize)]
+struct BackgroundBody {
+    color: String,
+}
+
+/// Set the canvas colour. Only the owner may; edge types whose colours would stop being readable on it are recoloured.
+async fn set_background(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(graph): Path<String>,
+    Json(body): Json<BackgroundBody>,
+) -> Result<Json<Value>, Response> {
+    let (room, _) = access(&app, &headers, &graph, None, Role::Owner)?;
+    let (color, recoloured) =
+        room.set_background(actor(&headers), &body.color).map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    Ok(Json(json!({ "background": color, "recoloured_edge_types": recoloured })))
+}
+
+/// The node types and edge types, and the canvas colour.
+async fn types(State(app): State<App>, headers: HeaderMap, Path(graph): Path<String>) -> Result<Json<Value>, Response> {
+    Ok(Json(api::types(&access(&app, &headers, &graph, None, Role::Viewer)?.0.graph.snapshot())))
 }
 
 /// The graph as Graphviz DOT text.
@@ -211,17 +242,17 @@ async fn node_neighbours(
         .map_err(|e| error(StatusCode::BAD_REQUEST, e))
 }
 
-/// Who is acting, from `X-Waypoint-Actor`: a label the caller chooses, not proof of identity.
-fn actor(headers: &HeaderMap) -> String {
-    let name: String = headers
-        .get("x-waypoint-actor")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .chars()
-        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
-        .take(40)
-        .collect();
-    if name.trim().is_empty() { "anonymous".into() } else { name }
+/// Who is acting. `X-Waypoint-Peer` is the caller's id (any string it keeps for the whole session:
+/// it keys the caller's undo history); `X-Waypoint-Actor` is the name it gives itself. Names may
+/// repeat and prove nothing. Without a peer id the caller is known by its name.
+fn actor(headers: &HeaderMap) -> rooms::Peer {
+    let header = |name: &str, allowed: fn(&char) -> bool, max: usize| -> String {
+        headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("").chars().filter(allowed).take(max).collect()
+    };
+    let name = header("x-waypoint-actor", |c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '), 40);
+    let name = if name.trim().is_empty() { "anonymous".to_owned() } else { name };
+    let id = header("x-waypoint-peer", |c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'), 64);
+    if id.is_empty() { rooms::Peer::from(name.as_str()) } else { rooms::Peer { id: format!("peer:{id}"), name } }
 }
 
 async fn undo(State(app): State<App>, headers: HeaderMap, Path(graph): Path<String>) -> Result<Json<Value>, Response> {
@@ -235,7 +266,7 @@ async fn redo(State(app): State<App>, headers: HeaderMap, Path(graph): Path<Stri
 /// Undo or redo the caller's own latest batch; 409 if there is none.
 fn step(app: App, headers: HeaderMap, graph: String, redo: bool) -> Result<Json<Value>, Response> {
     let (room, _) = access(&app, &headers, &graph, None, Role::Editor)?;
-    if room.undo(&actor(&headers), redo) {
+    if room.undo(actor(&headers), redo) {
         Ok(Json(json!({ "ok": true })))
     } else {
         Err(error(StatusCode::CONFLICT, format!("nothing to {}", if redo { "redo" } else { "undo" })))
@@ -257,7 +288,7 @@ async fn apply_batch(
     Json(batch): Json<Batch>,
 ) -> Result<Json<Value>, Response> {
     let (room, _) = access(&app, &headers, &graph, None, Role::Editor)?;
-    match room.apply(&batch, &actor(&headers)) {
+    match room.apply(&batch, actor(&headers)) {
         Ok(results) => Ok(Json(json!({ "results": results }))),
         Err(e) => Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": e.message, "op_index": e.op_index, "docs": "/llms.txt" }))).into_response()),
     }

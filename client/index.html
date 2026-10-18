@@ -7,111 +7,97 @@
     <title>Waypoint</title>
     <link rel="icon" href="data:," />
     <style>
-      html, body, #canvas { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #14161a; }
+      :root { --bg: #14161a; --panel: #1d2128; --fg: #e6e9ef; --soft: #aab4c3; --muted: #8793a8; --line: #2b3340; --accent: #5aa9ff; --danger: #ff8c8c; --field: #14161a; --title-fg: #e6e9ef; --title-muted: #8793a8; color-scheme: dark; }
+      html, body, #canvas { margin: 0; width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
       #editor {
         position: fixed; display: none; box-sizing: border-box; resize: none; overflow: hidden;
-        background: #1d2128; color: #e6e9ef; border: 2px solid #5aa9ff; border-radius: 8px;
+        background: var(--panel); color: var(--fg); border: 2px solid var(--accent); border-radius: 8px;
         font-family: system-ui, sans-serif; outline: none; margin: 0; z-index: 2;
         line-height: 1.2; white-space: pre-wrap; overflow-wrap: anywhere;
       }
       #hint {
         position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
-        padding: 6px 12px; border-radius: 6px; background: #1d2128; color: #aab4c3;
+        padding: 6px 12px; border-radius: 6px; background: var(--panel); color: var(--soft);
         font: 13px system-ui, sans-serif; pointer-events: none; user-select: none;
-        border: 1px solid #2b3340; max-width: min(90vw, 760px); text-align: center;
+        border: 1px solid var(--line); max-width: min(90vw, 760px); text-align: center;
       }
-      #hint b { color: #e6e9ef; font-weight: 600; }
-      #hint.active { color: #e6e9ef; border-color: #5aa9ff; }
-      #doc-title { position: fixed; top: 12px; left: 14px; z-index: 3; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e6e9ef; font: 600 15px system-ui, sans-serif; }
-      #doc-title.unset { color: #8793a8; font-weight: 400; }
+      #hint b { color: var(--fg); font-weight: 600; }
+      #hint.active { color: var(--fg); border-color: var(--accent); }
+      #doc-title { position: fixed; top: 12px; left: 14px; z-index: 3; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--title-fg); font: 600 15px system-ui, sans-serif; }
+      #doc-title.unset { color: var(--title-muted); font-weight: 400; }
       #doc-title.editable { cursor: pointer; }
       #share { position: fixed; top: 12px; right: 12px; z-index: 3; font: 13px system-ui, sans-serif; text-align: right; }
-      #share button { background: #1d2128; color: #aab4c3; border: 1px solid #2b3340; border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
-      #share button:hover { color: #e6e9ef; }
-      #share-panel { display: none; margin-top: 6px; padding: 10px 12px; width: 340px; text-align: left; background: #1d2128; color: #aab4c3; border: 1px solid #2b3340; border-radius: 8px; }
+      #share button { background: var(--panel); color: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+      #share button:hover { color: var(--fg); }
+      #types-panel {
+        position: fixed; top: 52px; left: 12px; width: 330px; max-height: calc(100vh - 120px); overflow-y: auto; display: none;
+        box-sizing: border-box; padding: 10px 12px; z-index: 3; background: var(--panel); color: var(--soft);
+        border: 1px solid var(--line); border-radius: 8px; font: 13px system-ui, sans-serif;
+      }
+      #types-panel h3 { margin: 0 0 6px; font-size: 14px; color: var(--fg); }
+      #types-panel h4 { margin: 12px 0 6px; font-size: 12px; color: var(--fg); font-weight: 600; }
+      #types-panel button { background: var(--field); color: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font: inherit; cursor: pointer; }
+      #types-panel button:hover:not(:disabled) { color: var(--fg); }
+      #types-panel button:disabled { opacity: 0.5; cursor: default; }
+      #types-panel button.primary { border-color: var(--accent); color: var(--fg); }
+      #types-panel button.danger { color: var(--danger); }
+      #types-panel .type { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+      #types-panel .type .name { flex: 1; color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+      #types-panel .swatch { display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 26px; box-sizing: border-box; font-size: 12px; flex: none; }
+      #types-panel .swatch.edge { border-radius: 4px; }
+      #types-panel .form { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--line); }
+      #types-panel .row { display: flex; align-items: center; gap: 6px; margin: 5px 0; flex-wrap: wrap; }
+      #types-panel .row > span { width: 110px; flex: none; }
+      #types-panel input:not([type=color]), #types-panel select { background: var(--field); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font: inherit; min-width: 0; }
+      #types-panel input[type=color] { width: 28px; height: 22px; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 1px; background: none; cursor: pointer; flex: none; }
+      #types-panel input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+      #types-panel input[type=color]::-webkit-color-swatch { border: 0; border-radius: 0; }
+      #types-panel input[type=color]::-moz-color-swatch { border: 0; border-radius: 0; }
+      #types-panel input[type=number] { width: 56px; }
+      #types-panel input.hex { width: 74px; font-family: ui-monospace, monospace; }
+      #types-panel .hint { color: var(--muted); }
+      #types-panel .problems, #types-panel .error { color: var(--danger); margin: 6px 0; }
+      #types-panel .actions { display: flex; gap: 6px; margin-top: 8px; }
+      #share button.on { color: var(--fg); border-color: var(--accent); }
+      #share-panel { display: none; margin-top: 6px; padding: 10px 12px; width: 340px; text-align: left; background: var(--panel); color: var(--soft); border: 1px solid var(--line); border-radius: 8px; }
       #share-panel div { display: flex; gap: 6px; align-items: baseline; margin-bottom: 8px; }
       #share-panel div button { margin-left: auto; flex: none; padding: 2px 8px; }
-      #share-panel b { color: #e6e9ef; }
+      #share-panel b { color: var(--fg); }
       #share-panel p { margin: 4px 0 0; font-size: 12px; }
       #margin {
-        position: fixed; top: 52px; right: 12px; bottom: 56px; width: 300px; display: none; overflow-y: auto;
-        box-sizing: border-box; padding: 10px 12px; z-index: 2; background: #1d2128; color: #aab4c3;
-        border: 1px solid #2b3340; border-radius: 8px; font: 13px system-ui, sans-serif;
+        position: fixed; top: 52px; right: 12px; bottom: 56px; width: 300px; display: none; flex-direction: column;
+        box-sizing: border-box; z-index: 2; background: var(--panel); color: var(--soft); overflow: hidden;
+        border: 2px solid var(--line); border-radius: 8px; font: 13px system-ui, sans-serif;
       }
-      #margin h3 { margin: 0 0 8px; font-size: 14px; color: #e6e9ef; overflow-wrap: anywhere; }
+      #margin h3 { margin: 0; padding: 10px 12px 6px; flex: none; font-size: 14px; color: var(--fg); overflow-wrap: anywhere; }
       #margin h4 { margin: 14px 0 6px; font-size: 12px; font-weight: 500; }
-      #margin h4 .rel { color: #8793a8; }
-      #margin h4 a { color: #5aa9ff; cursor: pointer; overflow-wrap: anywhere; }
+      #margin h4 .rel { color: var(--muted); }
+      #margin h4 a { color: var(--accent); cursor: pointer; overflow-wrap: anywhere; }
       #margin .note-editor {
-        width: 100%; min-height: 40%; box-sizing: border-box; resize: vertical; background: #14161a; color: #e6e9ef;
-        border: 1px solid #2b3340; border-radius: 6px; padding: 8px 10px; font: 13px/1.5 ui-monospace, monospace; outline: none;
+        flex: 1 1 auto; min-height: 120px; overflow-y: auto; padding: 4px 12px 10px; color: var(--fg); outline: none;
+        font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text;
       }
-      #margin .note-editor:focus { border-color: #5aa9ff; }
-      #margin .note-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 5.4em; overflow: hidden; color: #c4ccd9; }
-      #margin .more { background: none; border: 0; color: #5aa9ff; cursor: pointer; padding: 6px 0; font: inherit; }
-      #for-agents { position: fixed; inset: 0; z-index: 10; overflow: auto; padding: 24px; box-sizing: border-box; background: #14161a; color: #aab4c3; font: 14px/1.5 system-ui, sans-serif; }
-      #for-agents h1 { color: #e6e9ef; font-size: 18px; margin: 0 0 8px; }
-      #for-agents pre { white-space: pre-wrap; margin: 0; font: 13px/1.5 ui-monospace, monospace; }
+      #margin .note-editor:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
+      #margin .neighbours { flex: none; max-height: 40%; overflow-y: auto; padding: 0 12px 10px; border-top: 1px solid var(--line); }
+      #margin .neighbours:empty { display: none; }
+      #margin .note-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 5.4em; overflow: hidden; color: var(--soft); }
+      #margin .more { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 6px 0; font: inherit; }
+      #for-agents { position: fixed; inset: 0; z-index: 10; overflow: auto; padding: 24px; box-sizing: border-box; background: var(--bg); color: var(--soft); font: 14px/1.5 system-ui, sans-serif; }
+      #for-agents a { color: var(--accent); }
     </style>
   </head>
   <body>
     <!-- Shown until the app has loaded; an agent that fetches this page without running scripts reads it. -->
     <div id="for-agents">
-      <h1>Waypoint: a shared dependency graph</h1>
-      <pre>
-If you are an AI agent that was given a link to this page, you can read and edit the graph over HTTP.
-No browser is needed.
-
-THE KEY. The link you were given ends in #key=wp_..._...  Everything after "#key=" is your key. (The part
-after # is not sent to servers, so take it from the link text itself.) The key says what you may do:
-  wp_viewer_...  read only        wp_editor_...  read and edit        wp_owner_...  also hands out keys
-Send it on every request as the header:  Authorization: Bearer &lt;key&gt;
-Treat the key like a password. Do not put it anywhere it will be shared.
-
-BASE URL. The origin of this page, e.g. https://host. First find the graph's id (the path segment below):
-  GET /api/session                 -> {"role": "editor", "graph": "&lt;graph&gt;", ...}
-
-READ (viewer key is enough). Replace &lt;graph&gt; with the id above.
-  GET /api/graphs/&lt;graph&gt;                          counts of nodes, links, conflicts
-  GET /api/graphs/&lt;graph&gt;/nodes?q=text&amp;limit=50   find nodes by title or key
-  GET /api/graphs/&lt;graph&gt;/nodes/%2312              one node (key #12): position, depends_on, dependants, note
-  GET /api/graphs/&lt;graph&gt;/nodes/%2312/neighbours?direction=both&amp;depth=2
-  GET /api/graphs/&lt;graph&gt;/conflicts                links set aside because they would close a cycle
-  GET /api/graphs/&lt;graph&gt;/log                      who changed what
-  GET /api/graphs/&lt;graph&gt;/dot                      the whole graph as Graphviz DOT text (content type text/vnd.graphviz).
-        An arrow A -&gt; B means "A depends on B"; set-aside links are dashed red. Render it with
-        dot -Tsvg, or just read it: it is the quickest way to see the whole graph at once.
-
-WRITE (editor or owner key). One call applies a batch of operations; it is atomic (all or none), at most 100:
-  POST /api/graphs/&lt;graph&gt;/apply
-  Content-Type: application/json
-  X-Waypoint-Actor: your-name        (optional label shown in the change log and keeping your undo history apart)
-  {"label": "why", "ops": [
-     {"op": "create_node", "title": "Design API"},
-     {"op": "create_node", "title": "Build API", "depends_on": ["$0"]},
-     {"op": "link",   "from": "#3", "to": "#1"},
-     {"op": "append_note", "node": "$1", "text": "Needs the auth decision first."} ]}
-  Operations: create_node {title, depends_on?, dependants?}, rename_node {node, title}, delete_node {node},
-  link {from, to}, unlink {from, to}, move_node {node, x, y, with_subtree?},
-  set_note {node, body}, append_note {node, text}.
-  "link from to" means "from depends on to": "to" must be done first. Cycles are refused.
-  Name nodes by key ("#12", shown on each node and never changed by renaming), by id, or "$N" for the node
-  created by op N earlier in the same batch. Each node has ONE note, shared by everyone and edited live in the web UI; get_node shows it as "note".
-  set_note replaces it (only the changed part is edited); append_note adds to the end and is safer if people are typing.
-  Layout is automatic: you rarely need move_node. Errors come back as {"error": "...", "op_index": N}.
-
-UNDO (editor key). POST /api/graphs/&lt;graph&gt;/undo and /redo undo or redo the latest batch sent with your
-X-Waypoint-Actor name. Changes appear live for everyone who has the graph open.
-
-MCP. The same operations are available as MCP tools: run the waypoint-mcp binary with WAYPOINT_KEY set.
-      </pre>
+      <p>Waypoint: a shared dependency graph. AI agents: the API is documented in <a href="/llms.txt">/llms.txt</a> (OpenAPI: <a href="/openapi.json">/openapi.json</a>).</p>
     </div>
     <div id="canvas"></div>
     <textarea id="editor" rows="2" maxlength="200" spellcheck="false" placeholder="untitled"></textarea>
     <div id="doc-title"></div>
     <div id="margin"></div>
     <div id="hint"></div>
-    <div id="share"><button id="share-button" type="button">share</button><div id="share-panel"></div></div>
+    <div id="types-panel"></div>
+    <div id="share"><button id="types-button" type="button">types</button> <button id="share-button" type="button">share</button><div id="share-panel"></div></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

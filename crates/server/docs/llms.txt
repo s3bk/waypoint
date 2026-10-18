@@ -24,6 +24,8 @@ A new key set: `curl -X POST https://waypoint.qdat.net/api/graphs`. A graph exis
 - GET /api/graphs/{graph}/nodes/{node}             one node with its links and note
 - GET /api/graphs/{graph}/nodes/{node}/neighbours?direction=both|dependencies|dependants&depth=1
 - GET /api/graphs/{graph}/conflicts                links set aside because they would close a cycle
+- GET /api/graphs/{graph}/types                    node types, edge types, background colour
+- GET /api/graphs/{graph}/full                     whole graph as JSON: nodes (with note, position), links, conflicts
 - GET /api/graphs/{graph}/dot                      Graphviz DOT text
 - GET /api/graphs/{graph}/positions                absolute node positions
 - GET /api/graphs/{graph}/log                      who changed what, oldest first
@@ -32,7 +34,7 @@ A node reference is its key (`#12` or `12`), its UUID, or `$N` for the node crea
 
 ## Write (editor key or better)
 
-POST /api/graphs/{graph}/apply takes a batch of ops, applied atomically (any failure changes nothing and the error names `op_index`). Optional header `X-Waypoint-Actor: name` labels who made the change.
+POST /api/graphs/{graph}/apply takes a batch of ops, applied atomically (any failure changes nothing and the error names `op_index`). Optional headers: `X-Waypoint-Peer: id` is your id for this session (any string you keep; it keys your undo history; use a random one) and `X-Waypoint-Actor: name` is what you call yourself in the change log. Names may repeat and prove nothing; peers are told apart by id. Without an id you are known by your name.
 
     curl -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
       -d '{"label":"add task","ops":[{"op":"create_node","title":"Write tests","depends_on":["#3"]}]}' \
@@ -40,16 +42,28 @@ POST /api/graphs/{graph}/apply takes a batch of ops, applied atomically (any fai
     # {"results":[{...,"key":13}]}
 
 Ops (field `op`):
-- create_node {title, depends_on?: [ref], dependants?: [ref], x?, y?}
+- create_node {title, depends_on?: [ref], dependants?: [ref], x?, y?, node_type?: name}
 - rename_node {node, title}
 - delete_node {node}              links through it are joined
-- link {from, to}                 from depends on to; refused if it closes a cycle
+- link {from, to, edge_type?: name}  from depends on to; refused if it closes a cycle; relinking retypes
 - unlink {from, to}
-- move_node {node, x, y, with_subtree?}
+- move_node {node, x, y, with_dependencies?}   with_dependencies also moves what it depends on
+- set_node_type {node, node_type}       "default" restores the default
+- upsert_node_type {name, new_name?, shape?, bg?, fg?, border?, border_width?, corners?}
+- upsert_edge_type {name, new_name?, label?, color?, text_color?, width?, line_style?, start?, end?}
+- remove_node_type {name}, remove_edge_type {name}
 - set_note {node, body}           replace the note
 - append_note {node, text}        safer when others are editing
 
-- POST /api/graphs/{graph}/undo and /redo   undo or redo your own latest batch (409 if none)
+## Types and colours
+
+Nodes and edges have a type (a name; the default node type is `default`, the default edge type `depends_on`). `get_types`/`GET /types` lists them with styles. Only the fields you give change. Colours are `#rrggbb`.
+- Node type: shape (rect, pill, ellipse, hexagon, rhombus), corners (round, square; for rect, hexagon and rhombus), bg + fg (fill and title; give both; contrast >= 4.5:1), border, border_width (0-10); borders are solid.
+- Edge type: color (the line; contrast >= 3:1 with the graph background), text_color (the label; >= 4.5:1), width (1-10), line_style, start and end (none, arrow, dot, bar; `end` is at the dependency).
+- Out-of-range widths are clamped; bad colours, pairs or shapes fail the op (422) and say why.
+- PUT /api/graphs/{graph}/background {color}   owner key only; edge types that would stop being readable on it are recoloured black or white and listed in the reply.
+
+- POST /api/graphs/{graph}/undo and /redo   undo or redo your own latest batch, as identified by your peer id (409 if none)
 - PUT /api/graphs/{graph}/title {title}     owner key only
 
 ## Errors

@@ -2,6 +2,8 @@
 //! See DATA_MODEL.md. Everything here is plain data; behaviour lives in the
 //! layout and server crates.
 
+pub mod style;
+
 use serde::{Deserialize, Serialize};
 pub use uuid::Uuid;
 
@@ -120,23 +122,42 @@ pub enum Op {
         x: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         y: Option<i32>,
+        /// Name of a node type (see `upsert_node_type`); the default type if omitted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_type: Option<String>,
     },
     RenameNode { node: String, title: String },
     /// Delete a node. Links through it are joined: deleting B from "C depends
     /// on B depends on A" leaves "C depends on A".
     DeleteNode { node: String },
-    /// `from` depends on `to`. Refused if it would close a cycle.
-    Link { from: String, to: String },
+    /// `from` depends on `to`. Refused if it would close a cycle. `edge_type`
+    /// names an edge type; an existing link is changed to it.
+    Link {
+        from: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_type: Option<String>,
+    },
     Unlink { from: String, to: String },
     /// Move a node so its top-left corner is at `(x, y)`, then make room. With
-    /// `with_subtree` the nodes anchored beneath it move along.
+    /// `with_dependencies` the nodes it depends on (and what they depend on) move along.
     MoveNode {
         node: String,
         x: i32,
         y: i32,
-        #[serde(default)]
-        with_subtree: bool,
+        #[serde(default, alias = "with_subtree")]
+        with_dependencies: bool,
     },
+    /// Give a node a type by name; `"default"` goes back to the default type.
+    SetNodeType { node: String, node_type: String },
+    /// Create a node type, or change the one with this `name`. Only the given
+    /// fields change. `bg` and `fg` go together and must contrast.
+    UpsertNodeType(style::NodeSpec),
+    /// Same for edge types: `color`, `width`, `line_style`, `start`/`end` arrows, `text_color`.
+    UpsertEdgeType(style::EdgeSpec),
+    /// Remove a type. Nodes or edges that used it show the default style.
+    RemoveNodeType { name: String },
+    RemoveEdgeType { name: String },
     /// Replace the node's note (each node has one, shared by everyone, empty
     /// until written). The server turns this into a minimal edit of the shared
     /// text, so a person typing elsewhere in the note is not overwritten.

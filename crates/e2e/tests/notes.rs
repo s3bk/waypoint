@@ -5,7 +5,7 @@ use serde_json::json;
 use thirtyfour::By;
 
 async fn editor_text(page: &common::Page) -> String {
-    page.js("const e = document.querySelector('#margin .note-editor'); return e ? e.value : ''").await.as_str().unwrap_or("").to_owned()
+    page.js("const e = document.querySelector('#margin .note-editor'); return e ? e.textContent : ''").await.as_str().unwrap_or("").to_owned()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -27,7 +27,7 @@ async fn each_node_has_one_shared_note_edited_in_the_margin() {
     assert_eq!(displayed().await, "none");
     let (cx, cy) = page.rect(&alpha).await.center();
     page.click(cx, cy).await;
-    until("margin open", || async { displayed().await == "block" }).await;
+    until("margin open", || async { displayed().await == "flex" }).await;
 
     // Typing goes straight to the server, as one text shared with everyone.
     let editor = page.driver.find(By::Css("#margin .note-editor")).await.unwrap();
@@ -50,6 +50,6 @@ async fn each_node_has_one_shared_note_edited_in_the_margin() {
     let (vx, vy) = viewer.rect(&id).await.center();
     viewer.click(vx, vy).await;
     until("the viewer's margin", || async { editor_text(&viewer).await.contains("from an agent") }).await;
-    let readonly = viewer.js("return document.querySelector('#margin .note-editor').readOnly").await;
-    assert_eq!(readonly, json!(true));
+    let readonly = viewer.js("return document.querySelector('#margin .note-editor').isContentEditable").await;
+    assert_eq!(readonly, json!(false));
 }
