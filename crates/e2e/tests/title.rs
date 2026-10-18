@@ -14,13 +14,13 @@ async fn the_owner_names_the_graph_and_the_browser_remembers_it() {
     let keys = stack.new_graph();
     let owner = stack.page(&keys.owner).await;
     let editor = stack.page(&keys.editor).await;
-    assert!(shown_title(&owner).await.starts_with("Untitled"));
+    assert!(shown_title(&owner).await.starts_with("Unnamed"));
 
     // The owner renames by clicking the title; everyone sees it live.
     owner.driver.find(By::Id("doc-title")).await.unwrap().click().await.unwrap();
-    until("the prompt", || async { owner.driver.get_alert_text().await.is_ok() }).await;
-    owner.driver.send_alert_text("Launch plan").await.unwrap();
-    owner.driver.accept_alert().await.unwrap();
+    until("the title input", || async { owner.driver.find(By::Css("#doc-title input")).await.is_ok() }).await;
+    let input = owner.driver.find(By::Css("#doc-title input")).await.unwrap();
+    input.send_keys("Launch plan\n").await.unwrap();
     until("the owner's title", || async { shown_title(&owner).await == "Launch plan" }).await;
     until("the editor's title", || async { shown_title(&editor).await == "Launch plan" }).await;
     assert_eq!(stack.call(&keys, &keys.viewer, "GET", "", None).1["title"], "Launch plan");

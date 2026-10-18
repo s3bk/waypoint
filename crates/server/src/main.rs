@@ -80,6 +80,8 @@ async fn main() {
         Err(_) => router,
     }
     .layer(middleware::from_fn(key_from_query))
+    // Brotli or gzip, whichever the client accepts (the client assets and JSON replies; WebSocket frames are untouched).
+    .layer(tower_http::compression::CompressionLayer::new())
     .with_state(app);
     let addr = std::env::var("WAYPOINT_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");

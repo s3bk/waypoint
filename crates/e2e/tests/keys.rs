@@ -45,10 +45,7 @@ async fn new_graph_button_makes_a_graph_with_a_new_owner_key() {
     let owner = stack.page(&keys.owner).await;
     owner.driver.find(By::Id("share-button")).await.unwrap().click().await.unwrap();
     owner.driver.find(By::Id("new-graph-button")).await.unwrap().click().await.unwrap();
-    // It asks for a name first, then moves this tab to the new graph (its keys are in the Share panel, with no alert).
-    until("the name prompt", || async { owner.driver.get_alert_text().await.is_ok() }).await;
-    owner.driver.send_alert_text("Plan B").await.unwrap();
-    owner.driver.accept_alert().await.unwrap();
+    // It moves this tab to the new, unnamed graph (its keys are in the Share panel, with no alert or prompt).
     until("the tab to show the new graph", || async {
         owner.js("return localStorage.getItem('waypoint.key')").await.as_str().is_some_and(|k| k != keys.owner)
             && owner.js("return !!window.__waypoint").await == json!(true)
@@ -61,5 +58,8 @@ async fn new_graph_button_makes_a_graph_with_a_new_owner_key() {
     assert!(stored.starts_with("wp_owner_") && stored != keys.owner, "a different owner key: {stored}");
     assert!(owner.driver.get_alert_text().await.is_err(), "no alert about keys");
     assert!(owner.node_ids().await.is_empty(), "the new graph is empty");
-    until("the title", || async { owner.js("return document.getElementById('doc-title').textContent").await == json!("Plan B") }).await;
+    until("the title", || async {
+        owner.js("return document.getElementById('doc-title').textContent").await.as_str().is_some_and(|t| t.starts_with("Unnamed") && t.contains("click to name"))
+    })
+    .await;
 }

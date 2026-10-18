@@ -279,10 +279,14 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
     const id = (e.draft as NodeType | EdgeType).id;
     if (!e.isNew && id !== DEFAULT_NODE_TYPE && id !== DEFAULT_EDGE_TYPE) {
       const del = el("button", "danger", "Delete");
+      let armed = false;
       del.onclick = () => {
-        if (window.confirm(`Delete the type "${original}"? What uses it will look like the default.`)) {
-          void run([{ op: e.kind === "node" ? "remove_node_type" : "remove_edge_type", name: original }]);
+        if (!armed) {
+          armed = true;
+          del.textContent = "Really delete? What uses it will look like the default";
+          return;
         }
+        void run([{ op: e.kind === "node" ? "remove_node_type" : "remove_edge_type", name: original }]);
       };
       actions.append(del);
     }

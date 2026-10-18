@@ -6,7 +6,7 @@ import init, {
   move_group,
   move_node,
 } from "./wasm/waypoint_layout.js";
-import { askTitle, createGraph, getAccess, linkFor as shareLink, rememberGraph, setGraphTitle, type Access, type Role } from "./access";
+import { createGraph, getAccess, linkFor as shareLink, rememberGraph, setGraphTitle, type Access, type Role } from "./access";
 import { Camera } from "./camera";
 import { drawEdge, outline as shapeOutline, strokePath } from "./draw";
 import { Graph, type Place, type Vec2 } from "./graph";
@@ -142,14 +142,12 @@ function setupShare(role: Role, keys: Partial<Record<Role, string>>) {
   fresh.onclick = async () => {
     fresh.disabled = true;
     try {
-      const title = askTitle();
-      if (title === null) return;
-      const made = await createGraph(title);
+      const made = await createGraph();
       // Go to the new graph in this tab. Only the hash differs, so the page must be reloaded to read it.
       location.assign(shareLink(made.owner));
       location.reload();
     } catch (e) {
-      window.alert(String(e));
+      note.textContent = String(e);
     } finally {
       fresh.disabled = false;
     }
@@ -161,26 +159,57 @@ function setupShare(role: Role, keys: Partial<Record<Role, string>>) {
 /** The graph's name at the top left; the owner can click it to rename. The (title, key) pair is kept in this browser. */
 function setupTitle(access: Access, graph: Graph) {
   const label = document.getElementById("doc-title")!;
+  const owner = access.role === "owner";
   const show = () => {
     const title = graph.graphTitle();
-    label.textContent = title || (access.role === "owner" ? "Untitled graph (click to name it)" : "Untitled graph");
+    label.textContent = title || "Unnamed";
+    if (!title && owner) {
+      const hint = document.createElement("span");
+      hint.textContent = " · click to name this graph";
+      hint.style.fontWeight = "400";
+      label.append(hint);
+    }
     label.classList.toggle("unset", !title);
     document.title = title ? `${title} · Waypoint` : "Waypoint";
     rememberGraph(access, title);
   };
   graph.meta.observe(show);
   show();
-  if (access.role !== "owner") return;
+  if (!owner) return;
   label.classList.add("editable");
   label.title = "Rename this graph";
-  label.onclick = async () => {
-    const title = askTitle(graph.graphTitle());
-    if (title === null) return;
-    try {
-      await setGraphTitle(access.key, title);
-    } catch (e) {
-      window.alert(String(e));
-    }
+  label.onclick = () => {
+    if (label.querySelector("input")) return;
+    const input = document.createElement("input");
+    input.value = graph.graphTitle();
+    input.placeholder = "Name this graph";
+    input.maxLength = 200;
+    input.style.cssText = "font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--accent);border-radius:4px;padding:0 4px;width:min(320px,38vw);outline:none";
+    let finished = false;
+    const finish = async (save: boolean) => {
+      if (finished) return;
+      finished = true;
+      const title = input.value.trim();
+      input.remove();
+      show();
+      if (!save || !title || title === graph.graphTitle()) return;
+      try {
+        await setGraphTitle(access.key, title);
+      } catch (e) {
+        label.textContent = String(e);
+        setTimeout(show, 3000);
+      }
+    };
+    input.onkeydown = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") void finish(true);
+      else if (ev.key === "Escape") void finish(false);
+    };
+    input.onblur = () => void finish(true);
+    label.textContent = "";
+    label.append(input);
+    input.focus();
+    input.select();
   };
 }
 

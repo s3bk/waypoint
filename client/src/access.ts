@@ -100,13 +100,11 @@ export function forgetGraph(graph: string) {
   writeSaved(savedGraphs().filter((g) => g.graph !== graph));
 }
 
-/** Make a new graph on the server and have its owner name it. Its keys cannot be recovered later, so the caller must show them. */
-export async function createGraph(title: string): Promise<NewGraph> {
+/** Make a new graph on the server. It has no name yet (shown as "Unnamed"); the owner names it from the title. Its keys cannot be recovered later, so the caller must show them. */
+export async function createGraph(): Promise<NewGraph> {
   const r = await fetch("/api/graphs", { method: "POST" });
   if (!r.ok) throw new Error(`could not create a graph (${r.status})`);
-  const made = (await r.json()) as NewGraph;
-  await setGraphTitle(made.owner, title);
-  return made;
+  return (await r.json()) as NewGraph;
 }
 
 /** Name the graph `key` opens. Only an owner key may. */
@@ -120,15 +118,6 @@ export async function setGraphTitle(key: string, title: string): Promise<string>
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `could not set the title (${r.status})`);
   return (await r.json()).title;
-}
-
-/** Ask for a name until one is given; null if the person cancels. */
-export function askTitle(initial = ""): string | null {
-  for (;;) {
-    const answer = window.prompt("Name for this graph (shown to everyone who opens it):", initial);
-    if (answer === null) return null;
-    if (answer.trim()) return answer.trim();
-  }
 }
 
 /** What the start dialog can end with: a key to try, or a request for a new graph. */
@@ -163,7 +152,7 @@ function chooseGraph(problem: string): Promise<Choice | null> {
       row.style.cssText = "display:flex;gap:8px;align-items:center;margin:6px 0";
       const open = document.createElement("button");
       open.className = "saved-graph";
-      open.textContent = `${g.title || "Untitled graph"} · ${g.role}`;
+      open.textContent = `${g.title || "Unnamed"} · ${g.role}`;
       open.style.cssText = "flex:1;text-align:left;padding:8px 10px;background:#14161a;color:#e6e9ef;border:1px solid #2b3340;border-radius:6px;cursor:pointer;font:inherit";
       open.onclick = () => done({ key: g.key });
       const forget = document.createElement("button");
@@ -220,9 +209,7 @@ export async function getAccess(): Promise<Access> {
       key = choice.key;
       continue;
     }
-    const title = askTitle();
-    if (title === null) continue;
-    const made = await createGraph(title);
+    const made = await createGraph();
     key = made.owner;
   }
 }

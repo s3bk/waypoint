@@ -15,6 +15,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.1"
 getrandom = "0.4.3"
+tower-http = { version = "0.7.1", features = ["compression-br", "compression-gzip"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
