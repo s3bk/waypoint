@@ -95,7 +95,7 @@ viewer key to let them look only), never the owner key.
 
 ## Deploying
 
-The live instance is https://waypoint.qdat.net. The deploy steps (build with
+The live instance is https://waypoint.qdat.net. `scripts/deploy.sh` builds, uploads and restarts (`--rollback` restores the previous binary). The manual steps (build with
 `cargo build --profile deploy`, upload, restart the user systemd unit) are in
 `DEPLOY.local.md` in the repo root, which is kept out of git on purpose; ask the
 maintainer if you do not have it. Agents: see `/llms.txt` and `/openapi.json` on
