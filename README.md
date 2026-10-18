@@ -75,6 +75,15 @@ sees the agent's edits live.
 
 ### Install
 
+**Agents: check first, install only what is missing.** If you already have `waypoint`
+tools (`connect`, `get_graph`, ...), skip to step 4. Otherwise check each step before doing it:
+
+- Registered? `claude mcp list` shows a `waypoint` line. If it does, do not add it again
+  (`claude mcp add` fails on a duplicate name); if it is listed but not `Connected`, see
+  Troubleshooting.
+- Binary present? `command -v waypoint-mcp` (or `ls ~/.cargo/bin/waypoint-mcp`). If it
+  prints a path, skip step 1.
+
 You need a Rust toolchain (stable, 1.85 or newer, for edition 2024; get it from
 https://rustup.rs) and a Waypoint server to talk to: your own (`cargo run -p
 waypoint-server`, on `http://127.0.0.1:3000`) or a hosted one, such as
