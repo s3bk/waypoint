@@ -15,7 +15,7 @@ Find the graph ID from your key:
     curl -H "Authorization: Bearer $KEY" https://waypoint.qdat.net/api/session
     # {"role":"editor","graph":"wp_viewer_...","exists":true,"keys":{...}}
 
-A new key set: `curl -X POST https://waypoint.qdat.net/api/graphs`. A graph exists once an editor first writes to it.
+A new key set: `curl -X POST https://waypoint.qdat.net/api/graphs`. A graph exists once an editor first writes to it. The reply holds the owner, editor and viewer keys; they cannot be recovered later, so keep them. Name the graph with `PUT /api/graphs/{graph}/title` (owner key). Over MCP, the `create_graph` tool does all of this and opens the new graph.
 
 ## Read (viewer key or better)
 

@@ -128,7 +128,7 @@ https://waypoint.qdat.net.
    ```
 
 3. Restart the client, then check: in Claude Code run `claude mcp list` (it should say
-   `waypoint ... Connected`) or `/mcp`; the server lists 25 tools.
+   `waypoint ... Connected`) or `/mcp`; the server lists 26 tools.
 
 4. Connect to a graph. Ask the user for a key or share link (the Share panel in the
    web UI makes them), then call the `connect` tool with it. Use an **editor** key to
@@ -162,7 +162,7 @@ tools (without it the latest is used). The key decides what the agent may do
 tools return an error). `WAYPOINT_URL` (default `http://127.0.0.1:3000`)
 is optional; `WAYPOINT_ACTOR` (default `agent`) is the name shown for this agent
 in the change log (names may repeat). Each MCP process also sends a random peer
-id, which is what keeps its undo history apart from everyone else's. 25 tools (`connect` plus):
+id, which is what keeps its undo history apart from everyone else's. 26 tools (`connect` and `create_graph`, which makes a new graph and opens it, plus):
 `get_graph`, `get_full_graph`, `search_nodes`, `get_node`, `get_neighbours`,
 `get_conflicts`, `get_dot`, `get_types`, `create_node`, `rename_node`,
 `delete_node`, `link_nodes`, `unlink_nodes`, `move_node` (`with_destinations`

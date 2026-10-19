@@ -23,6 +23,10 @@ pub trait Backend {
     fn connect(&self, _key: &str, _name: Option<&str>) -> Result<Value, String> {
         Err("this backend cannot change keys".into())
     }
+    /// Make a new graph, open it under `name` (default: its title) and return its keys with the `connect` fields. The owner key cannot be recovered later.
+    fn create_graph(&self, _title: Option<&str>, _name: Option<&str>) -> Result<Value, String> {
+        Err("this backend cannot create graphs".into())
+    }
     /// Choose the graph the next requests go to: the one called `graph` (a name or id), or with
     /// `None` the most recently connected. `Ok(None)` means the backend has no connections of its own.
     fn select(&self, _graph: Option<&str>) -> Result<Option<String>, String> {
@@ -58,7 +62,7 @@ fn node_ref_schema(description: &str) -> Value {
 
 fn tools() -> Vec<Value> {
     let mut all = tool_list();
-    for t in all.iter_mut().filter(|t| t["name"] != "connect") {
+    for t in all.iter_mut().filter(|t| t["name"] != "connect" && t["name"] != "create_graph") {
         t["inputSchema"]["properties"]["graph"] = json!({ "type": "string", "description": "Which connected graph to use (its name from `connect`). Default: the most recently connected." });
     }
     all
@@ -72,6 +76,11 @@ fn tool_list() -> Vec<Value> {
             "name": "connect",
             "description": "Open a graph with a key the user gave you (a bare key or a share link). Needed once before any other tool when the server was started without a key; call it again to switch graphs. The key decides what you may do: viewer reads, editor also changes. Never ask for or use an owner key unless the user insists. Several graphs can be open at once: give each a `name`, then pass that name as `graph` to the other tools (without `graph` they use the most recently connected one).",
             "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "A short name for this graph. Default: its title." }, "key": { "type": "string", "description": "The key (wp_editor_…, wp_viewer_… or wp_owner_…) or a link containing it." } }, "required": ["key"] }
+        }),
+        json!({
+            "name": "create_graph",
+            "description": "Make a new, empty graph and open it (like `connect`, so the other tools then act on it). Returns its owner, editor and viewer keys: they cannot be recovered later, so give the user the editor and viewer keys (or links) to open it, and keep the owner key to yourself unless they ask for it. Only do this when the user wants a new graph.",
+            "inputSchema": { "type": "object", "properties": { "title": { "type": "string", "description": "The graph's name, shown to everyone who opens it. Default: unnamed." }, "name": { "type": "string", "description": "A short name for this graph in this session. Default: its title." } } }
         }),
         json!({
             "name": "get_graph",
@@ -254,6 +263,10 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
     if name == "connect" {
         let key = extract_key(str_arg(args, "key")?).ok_or("that does not contain a Waypoint key (they start with wp_owner_, wp_editor_ or wp_viewer_)")?;
         return backend.connect(&key, args.get("name").and_then(Value::as_str));
+    }
+    if name == "create_graph" {
+        let text = |n: &str| args.get(n).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
+        return backend.create_graph(text("title"), text("name"));
     }
     let graph = backend.select(args.get("graph").and_then(Value::as_str))?.unwrap_or_else(|| cfg.graph.clone());
     if graph.is_empty() {
@@ -460,7 +473,7 @@ mod tests {
                 assert!(t["inputSchema"]["properties"][req.as_str().unwrap()].is_object(), "{}: {req}", t["name"]);
             }
         }
-        assert_eq!(names.len(), 25);
+        assert_eq!(names.len(), 26);
     }
 
     #[test]

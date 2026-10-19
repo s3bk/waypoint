@@ -109,6 +109,20 @@ impl Backend for Http {
         Ok(json!({ "name": c.all[index].name, "graph": graph, "role": session["role"], "title": title, "open_graphs": names }))
     }
 
+    fn create_graph(&self, title: Option<&str>, name: Option<&str>) -> Result<Value, String> {
+        let keys = Self::finish(self.agent.post(&format!("{}/api/graphs", self.base)).call())?;
+        let owner = keys["owner"].as_str().ok_or("the server did not return an owner key")?.to_owned();
+        let mut opened = self.connect(&owner, name)?;
+        if let Some(title) = title {
+            let graph = opened["graph"].as_str().unwrap_or_default();
+            let url = format!("{}/api/graphs/{}/title", self.base, waypoint_mcp::encode(graph));
+            let set = Self::finish(self.agent.put(&url).set("Authorization", &format!("Bearer {owner}")).send_json(json!({ "title": title })))?;
+            opened["title"] = set["title"].clone();
+        }
+        opened["keys"] = keys;
+        Ok(opened)
+    }
+
     fn select(&self, graph: Option<&str>) -> Result<Option<String>, String> {
         let mut c = self.conns.lock().unwrap();
         let found = match graph {
