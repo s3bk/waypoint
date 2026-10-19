@@ -1,6 +1,6 @@
 # Waypoint: current status
 
-Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme follows canvas colour). Design: [DESIGN.md](DESIGN.md). Data model and API:
+Last updated 2026-10-19 (encryption at rest, graph switcher, `create_graph`, PNG copies to clipboard). Design: [DESIGN.md](DESIGN.md). Data model and API:
 [DATA_MODEL.md](DATA_MODEL.md). Setup: [README.md](README.md).
 
 ## Working
@@ -16,7 +16,7 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
 - **Layout crate** (native and WASM): anchored positions, drag with or without
   sub-graph, make-room, add/drop with edge avoidance, anchor repair, cycle
   check, link joining on delete.
-- **Agent API and MCP** (`crates/mcp`, binary `waypoint-mcp`): 25 tools (`connect`, which opens a graph with a key the user gives, several at once via `graph`; the graph and node reads, `get_full_graph`, `get_types`, create/rename/delete/link/unlink/move, `set_note`/`append_note`, `set_node_type`, `upsert_*_type`, `remove_*_type`, `undo`, `redo`, `apply_batch`). Batches are atomic, max 100 ops, `$N` refers to a node created
+- **Agent API and MCP** (`crates/mcp`, binary `waypoint-mcp`): 26 tools (`connect`, which opens a graph with a key the user gives, several at once via `graph`; `create_graph`, which makes a new graph, opens it and returns its keys; the graph and node reads, `get_full_graph`, `get_types`, create/rename/delete/link/unlink/move, `set_note`/`append_note`, `set_node_type`, `upsert_*_type`, `remove_*_type`, `undo`, `redo`, `apply_batch`). Batches are atomic, max 100 ops, `$N` refers to a node created
   earlier in the batch.
 - **Keys** (`crates/server/src/auth.rs`): owner → editor → viewer, each derived
   from the one above by a hash; the graph is identified by its viewer key; a key
@@ -28,6 +28,15 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
   All edits go through `POST /apply`, the same operations as agents; Ctrl+Z
   undoes and Ctrl+Shift+Z / Ctrl+Y redoes the tab's own batches.
   Asks for a key (or creates a graph), read-only mode for viewers, Share panel.
+  A "graphs" button lists the graphs this browser has opened (current one marked) to switch
+  between them, forget one, or make a new one. "Export PNG" copies the image to the clipboard
+  (when the browser allows) before saving the file.
+- **Encryption at rest** (`crates/server/src/crypt.rs`): every stored update and snapshot is
+  sealed with XChaCha20-Poly1305 under a key derived from the viewer key; the server keeps
+  only the derived cipher in memory while a graph is open, so a copied database is unreadable
+  and a graph stays sealed after a restart until someone opens it with a key. Rows from before
+  carry `enc = 0` and are re-sealed (then `VACUUM`ed) when their graph is next opened. See
+  DATA_MODEL.md, Storage.
 
 - **Post-merge repair** (`crates/server/src/repair.rs`): after each client
   update and on room load, the server flags the newest edge of every dependency
@@ -93,7 +102,7 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
 
 ## Verified
 
-- 127 Rust unit tests: 50 layout, 58 server, 10 MCP, 9 model, plus 11 browser tests in
+- 131 Rust unit tests: 50 layout, 62 server, 10 MCP, 9 model, plus 11 browser tests in
   `crates/e2e` (thirtyfour, headless Chrome; `cargo test -p waypoint-e2e`):
   editing, MCP agent alongside a browser, keys and the Share panel, New graph,
   and a conflicted edge being flagged and kept. The editing test ends with
@@ -128,7 +137,14 @@ Last updated 2026-10-18 (type registries, peer ids, dangling-link cleanup, theme
 - The old `demo` graph (and any graph stored under a plain name) is unreachable:
   graphs are now filed under the hash of their viewer key. It is still in
   `waypoint.db`; adopting it under new keys needs a small migration, not written.
-- A key in a URL (`?key=`, WebSocket or REST) can appear in proxy logs.
+- A key in a URL (`?key=` on the WebSocket, and the viewer key that names the graph in every
+  REST path) can appear in proxy logs. The viewer key also decrypts the stored graph, so logs
+  plus a stolen database defeat encryption at rest. Planned: name graphs in paths by their
+  stored id and send the key only in `Authorization` (WebSocket: `Sec-WebSocket-Protocol`).
+- Encryption at rest: graphs not yet opened since it shipped are still plaintext in the
+  database, and old copies of the database (the host has `data/pre-encryption.db`) stay readable.
+  Rolling the server back after graphs were re-sealed leaves them unreadable. Graph ids, blob
+  sizes, row counts and creation times are not hidden.
 - The client still carries layout code for the live drag preview; committed
   edits use `/apply`, so the server decides the result.
 - A client needs an editor key and a reachable server to edit: edits are no
