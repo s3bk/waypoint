@@ -59,6 +59,11 @@
       #types-panel .problems, #types-panel .error { color: var(--danger); margin: 6px 0; }
       #types-panel .actions { display: flex; gap: 6px; margin-top: 8px; }
       #share button.on { color: var(--fg); border-color: var(--accent); }
+      #graphs-panel { display: none; margin-top: 6px; padding: 8px; width: 340px; text-align: left; background: var(--panel); color: var(--soft); border: 1px solid var(--line); border-radius: 8px; }
+      #graphs-panel ul { list-style: none; margin: 0; padding: 0; }
+      #graphs-panel li { display: flex; gap: 6px; margin-bottom: 6px; }
+      #graphs-panel li button.open { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #graphs-panel li.current button.open { color: var(--fg); border-color: var(--accent); }
       #share-panel { display: none; margin-top: 6px; padding: 10px 12px; width: 340px; text-align: left; background: var(--panel); color: var(--soft); border: 1px solid var(--line); border-radius: 8px; }
       #share-panel div { display: flex; gap: 6px; align-items: baseline; margin-bottom: 8px; }
       #share-panel div button { margin-left: auto; flex: none; padding: 2px 8px; }
@@ -97,7 +102,7 @@
     <div id="margin"></div>
     <div id="hint"></div>
     <div id="types-panel"></div>
-    <div id="share"><button id="types-button" type="button">types</button> <button id="share-button" type="button">share</button><div id="share-panel"></div></div>
+    <div id="share"><button id="types-button" type="button">types</button> <button id="graphs-button" type="button">graphs</button> <button id="share-button" type="button">share</button><div id="graphs-panel"></div><div id="share-panel"></div></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

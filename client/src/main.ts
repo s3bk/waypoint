@@ -6,7 +6,7 @@ import init, {
   move_group,
   move_node,
 } from "./wasm/waypoint_layout.js";
-import { createGraph, getAccess, linkFor as shareLink, rememberGraph, setGraphTitle, type Access, type Role } from "./access";
+import { createGraph, forgetGraph, getAccess, linkFor as shareLink, rememberGraph, savedGraphs, setGraphTitle, type Access, type Role } from "./access";
 import { Camera } from "./camera";
 import { drawEdge, exitPoint, isSharp, outline as shapeOutline, strokePath } from "./draw";
 import { exportPng, exportSvg, fileName } from "./export";
@@ -147,6 +147,59 @@ function setupShare(role: Role, keys: Partial<Record<Role, string>>) {
   button.onclick = () => (panel.style.display = panel.style.display === "block" ? "none" : "block");
 }
 
+/** Go to the graph `key` opens in this tab. Only the hash differs, so the page must be reloaded to read it. */
+function openGraph(key: string) {
+  location.assign(shareLink(key));
+  location.reload();
+}
+
+/** A "graphs" button listing the graphs this browser has opened, to switch between them or start a new one. */
+function setupGraphs(access: Access) {
+  const button = document.getElementById("graphs-button")!;
+  const panel = document.getElementById("graphs-panel")!;
+  const render = () => {
+    const list = document.createElement("ul");
+    for (const g of savedGraphs()) {
+      const current = g.graph === access.graph;
+      const li = document.createElement("li");
+      li.className = current ? "current" : "";
+      const open = document.createElement("button");
+      open.className = "open";
+      open.textContent = `${g.title || "Unnamed"} · ${g.role}`;
+      open.disabled = current;
+      open.onclick = () => openGraph(g.key);
+      li.append(open);
+      if (!current) {
+        const forget = document.createElement("button");
+        forget.textContent = "Forget";
+        forget.title = "Remove this graph and its key from this browser";
+        forget.onclick = () => {
+          forgetGraph(g.graph);
+          render();
+        };
+        li.append(forget);
+      }
+      list.append(li);
+    }
+    const fresh = document.createElement("button");
+    fresh.textContent = "New graph";
+    fresh.onclick = async () => {
+      fresh.disabled = true;
+      try {
+        openGraph((await createGraph()).owner);
+      } catch {
+        fresh.disabled = false;
+      }
+    };
+    panel.replaceChildren(list, fresh);
+  };
+  button.onclick = () => {
+    const show = panel.style.display !== "block";
+    if (show) render();
+    panel.style.display = show ? "block" : "none";
+  };
+}
+
 /** The graph's name at the top left; the owner can click it to rename. The (title, key) pair is kept in this browser. */
 function setupTitle(access: Access, graph: Graph) {
   const label = document.getElementById("doc-title")!;
@@ -217,6 +270,7 @@ async function main() {
   const provider = new WebsocketProvider(wsBase, access.graph, graph.doc, { params: { key: access.key } });
   setupShare(access.role, access.keys);
   setupTitle(access, graph);
+  setupGraphs(access);
   const awareness = provider.awareness;
 
   const dpr = window.devicePixelRatio || 1;
