@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod crypt;
 mod graph;
 mod ops;
 mod repair;
@@ -370,7 +371,7 @@ fn access(
     if role == Role::Viewer && !app.rooms.exists(&id) {
         return Err(unauthorized());
     }
-    let room = app.rooms.get(&id).map_err(|e| {
+    let room = app.rooms.get(&id, graph).map_err(|e| {
         eprintln!("loading graph: {e}");
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     })?;

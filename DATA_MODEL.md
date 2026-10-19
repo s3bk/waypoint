@@ -734,6 +734,18 @@ SQLite, behind `Store` in the server crate. Implemented:
   characters) of its viewer key. A graph named `demo` is still seeded with three
   fixed-id nodes when empty, but nothing can reach it any more (see STATUS.md). The ids are fixed because a client reconnecting after a server
   restart re-sends its copy; random ids would duplicate the nodes.
+- **Encrypted at rest** (`crypt.rs`): every update and snapshot is sealed with
+  XChaCha20-Poly1305 under a key derived from the graph's viewer key, so a copy
+  of the database holds no readable graph. The server never stores the key: a
+  graph is opened by a request that presents a key (all three roles derive the
+  viewer key), and the room keeps only the derived cipher in memory. After a
+  restart a graph stays sealed until someone opens it. The graph id and blob
+  kind are authenticated, so blobs cannot be moved between graphs. Rows carry an
+  `enc` flag; rows from before encryption (`enc = 0`) are read as plaintext and
+  replaced by a sealed snapshot when their graph is next opened, followed by a
+  `VACUUM` and log truncate (with `secure_delete` on) so the plaintext does not
+  linger in free pages. Not hidden: graph ids (hashes), blob sizes, row counts
+  and creation times. Anyone holding a key, or the running process, can read.
 - Shutdown on Ctrl-C drains the write queue; it exits after two seconds even
   if WebSocket clients stay connected.
 

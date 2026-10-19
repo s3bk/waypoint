@@ -17,7 +17,15 @@ use yrs::{
     updates::encoder::Encode,
 };
 
-use crate::{graph::{Graph, Write}, ops, ops::OpError, repair, store::Store, sync::Relay};
+use crate::{
+    crypt::{Cipher, Kind},
+    graph::{Graph, Write},
+    ops,
+    ops::OpError,
+    repair,
+    store::{Blob, Store},
+    sync::Relay,
+};
 
 /// Fold the update log into a snapshot after this many updates.
 const COMPACT_AFTER: u32 = 200;
@@ -27,6 +35,8 @@ pub struct Room {
     pub graph: Graph,
     pub relay: broadcast::Sender<Relay>,
     store: Arc<Store>,
+    /// Seals everything this room writes to `store`.
+    cipher: Cipher,
     /// Serialises server-made edits, so a batch plans against a state no other batch is changing.
     edit_lock: Mutex<()>,
     /// Updates written since the last snapshot.
@@ -49,24 +59,30 @@ pub fn normalize_graph_title(title: &str) -> Result<String, String> {
 }
 
 impl Room {
-    fn open(id: &str, store: Arc<Store>) -> Result<Arc<Self>, String> {
+    fn open(id: &str, store: Arc<Store>, cipher: Cipher) -> Result<Arc<Self>, String> {
         let stored = store.load(id).map_err(|e| e.to_string())?;
         let graph = Graph::new();
+        // Rows from before encryption are read as they are and sealed again below.
+        let mut legacy = false;
+        let mut read = |blob: &Blob, kind| -> Result<Vec<u8>, String> {
+            legacy |= !blob.sealed;
+            if blob.sealed { cipher.open(id, kind, &blob.data) } else { Ok(blob.data.clone()) }
+        };
         if let Some(snapshot) = &stored.snapshot {
-            graph.apply_update(snapshot)?;
+            graph.apply_update(&read(snapshot, Kind::Snapshot)?)?;
         }
         for update in &stored.updates {
-            graph.apply_update(update)?;
+            graph.apply_update(&read(update, Kind::Update)?)?;
         }
 
         // Subscribe only now, so loading does not write itself back.
         let unsaved = Arc::new(AtomicU32::new(stored.updates.len() as u32));
         {
-            let (store, id, unsaved) = (store.clone(), id.to_owned(), unsaved.clone());
+            let (store, id, unsaved, cipher) = (store.clone(), id.to_owned(), unsaved.clone(), cipher.clone());
             graph
                 .doc()
                 .observe_update_v1_with("persist", move |_, e| {
-                    store.append(&id, e.update.clone());
+                    store.append(&id, cipher.seal(&id, Kind::Update, &e.update));
                     unsaved.fetch_add(1, Ordering::Relaxed);
                 })
                 .map_err(|e| e.to_string())?;
@@ -80,9 +96,12 @@ impl Room {
         let first = graph.snapshot();
         let (title, background) = (Mutex::new(first.title), Mutex::new(first.background));
         let room =
-            Arc::new(Self { id: id.to_owned(), graph, relay, store, edit_lock: Mutex::new(()), unsaved, title, background });
+            Arc::new(Self { id: id.to_owned(), graph, relay, store, cipher, edit_lock: Mutex::new(()), unsaved, title, background });
         room.assign_keys();
         room.repair(); // a stale client may have re-merged something invalid before the last shutdown
+        if legacy {
+            room.seal_legacy(stored.last_seq);
+        }
         room.maybe_compact();
         Ok(room)
     }
@@ -210,6 +229,13 @@ impl Room {
         }
     }
 
+    /// Replace everything stored up to `last_seq` with one sealed snapshot, and purge the plaintext from the file.
+    fn seal_legacy(&self, last_seq: i64) {
+        self.unsaved.store(0, Ordering::Relaxed);
+        self.store.snapshot(&self.id, last_seq, self.cipher.seal(&self.id, Kind::Snapshot, &self.graph.encode_state()));
+        self.store.scrub();
+    }
+
     /// Replace the update log with a snapshot once it has grown long enough.
     /// Call outside any document transaction.
     pub fn maybe_compact(&self) {
@@ -219,7 +245,7 @@ impl Room {
         self.unsaved.store(0, Ordering::Relaxed);
         // Order matters: read the sequence number first (see Store::last_seq).
         match self.store.last_seq(&self.id) {
-            Ok(seq) => self.store.snapshot(&self.id, seq, self.graph.encode_state()),
+            Ok(seq) => self.store.snapshot(&self.id, seq, self.cipher.seal(&self.id, Kind::Snapshot, &self.graph.encode_state())),
             Err(e) => eprintln!("room {}: compaction skipped: {e}", self.id),
         }
     }
@@ -269,13 +295,14 @@ impl Rooms {
         self.rooms.lock().expect("rooms lock").contains_key(id) || self.store.has_graph(id)
     }
 
-    /// The room for a graph, loading it from storage if this is its first use.
-    pub fn get(&self, id: &str) -> Result<Arc<Room>, String> {
+    /// The room for a graph, loading it from storage if this is its first use. `viewer_key` is
+    /// the graph's viewer key, which unseals what is stored; the room keeps only what it derives.
+    pub fn get(&self, id: &str, viewer_key: &str) -> Result<Arc<Room>, String> {
         let mut rooms = self.rooms.lock().expect("rooms lock");
         if let Some(room) = rooms.get(id) {
             return Ok(room.clone());
         }
-        let room = Room::open(id, self.store.clone())?;
+        let room = Room::open(id, self.store.clone(), Cipher::for_viewer_key(viewer_key))?;
         rooms.insert(id.to_owned(), room.clone());
         Ok(room)
     }
@@ -291,6 +318,9 @@ pub fn valid_graph_id(id: &str) -> bool {
 mod tests {
     use super::*;
     use waypoint_model::{NodeId, Place, Vec2};
+
+    /// Stands in for a graph's viewer key.
+    const KEY: &str = "wp_viewer_test";
 
     fn rooms_at(path: &std::path::Path) -> Rooms {
         Rooms::new(Arc::new(Store::open(path).unwrap()))
@@ -308,7 +338,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("w.db");
         let rooms = rooms_at(&db);
-        let room = rooms.get("g1").unwrap();
+        let room = rooms.get("g1", KEY).unwrap();
         assert!(room.set_title("owner", "   ").is_err());
         assert_eq!(room.set_title("owner", "  Launch   plan ").unwrap(), "Launch plan");
 
@@ -321,7 +351,7 @@ mod tests {
 
         rooms.store.flush();
         drop((room, rooms));
-        assert_eq!(rooms_at(&db).get("g1").unwrap().graph.snapshot().title, "Launch plan");
+        assert_eq!(rooms_at(&db).get("g1", KEY).unwrap().graph.snapshot().title, "Launch plan");
     }
 
     #[test]
@@ -330,13 +360,13 @@ mod tests {
         let db = dir.path().join("w.db");
 
         let rooms = rooms_at(&db);
-        let room = rooms.get("g1").unwrap();
+        let room = rooms.get("g1", KEY).unwrap();
         add_nodes(&room, 3);
         let before = room.graph.places();
         rooms.store.flush();
         drop((room, rooms));
 
-        let reopened = rooms_at(&db).get("g1").unwrap();
+        let reopened = rooms_at(&db).get("g1", KEY).unwrap();
         assert_eq!(reopened.graph.places(), before);
         assert_eq!(before.len(), 3);
     }
@@ -345,10 +375,10 @@ mod tests {
     fn graphs_are_independent() {
         let dir = tempfile::tempdir().unwrap();
         let rooms = rooms_at(&dir.path().join("w.db"));
-        add_nodes(&rooms.get("a").unwrap(), 2);
-        add_nodes(&rooms.get("b").unwrap(), 5);
-        assert_eq!(rooms.get("a").unwrap().graph.places().len(), 2);
-        assert_eq!(rooms.get("b").unwrap().graph.places().len(), 5);
+        add_nodes(&rooms.get("a", KEY).unwrap(), 2);
+        add_nodes(&rooms.get("b", KEY).unwrap(), 5);
+        assert_eq!(rooms.get("a", KEY).unwrap().graph.places().len(), 2);
+        assert_eq!(rooms.get("b", KEY).unwrap().graph.places().len(), 5);
         rooms.store.flush();
         assert_eq!(rooms.store.graph_ids().unwrap(), vec!["a", "b"]);
     }
@@ -359,7 +389,7 @@ mod tests {
         let db = dir.path().join("w.db");
         for _ in 0..3 {
             let rooms = rooms_at(&db);
-            assert_eq!(rooms.get("demo").unwrap().graph.places().len(), 3);
+            assert_eq!(rooms.get("demo", KEY).unwrap().graph.places().len(), 3);
             rooms.store.flush();
         }
     }
@@ -370,7 +400,7 @@ mod tests {
         let db = dir.path().join("w.db");
 
         let rooms = rooms_at(&db);
-        let room = rooms.get("big").unwrap();
+        let room = rooms.get("big", KEY).unwrap();
         add_nodes(&room, (COMPACT_AFTER as usize) + 50);
         rooms.store.flush(); // the log must be on disk before it can be compacted
         room.maybe_compact();
@@ -383,9 +413,77 @@ mod tests {
         assert!(stored.updates.len() < 50, "log not compacted: {} updates", stored.updates.len());
         drop((room, rooms));
 
-        let reopened = rooms_at(&db).get("big").unwrap();
+        let reopened = rooms_at(&db).get("big", KEY).unwrap();
         assert_eq!(reopened.graph.places(), expected);
         assert_eq!(expected.len(), COMPACT_AFTER as usize + 60);
+    }
+
+    /// Every byte of the database file and its log, as one buffer.
+    fn raw_bytes(db: &std::path::Path) -> Vec<u8> {
+        let wal = std::path::PathBuf::from(format!("{}-wal", db.display()));
+        [std::fs::read(db).unwrap(), std::fs::read(wal).unwrap_or_default()].concat()
+    }
+
+    fn contains(haystack: &[u8], needle: &str) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle.as_bytes())
+    }
+
+    #[test]
+    fn a_copy_of_the_database_holds_no_readable_graph_and_needs_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("w.db");
+        let rooms = rooms_at(&db);
+        let room = rooms.get("g1", KEY).unwrap();
+        room.graph.create_node(NodeId::new(), "launch codes", Place::at_origin(Vec2::new(0, 0)));
+        room.set_title("owner", "Quarterly secrets").unwrap();
+        rooms.store.flush();
+        assert!(!contains(&raw_bytes(&db), "launch codes"), "an update is stored in the clear");
+        assert!(!contains(&raw_bytes(&db), "Quarterly secrets"));
+
+        // After compaction the snapshot is sealed as well.
+        add_nodes(&room, COMPACT_AFTER as usize);
+        rooms.store.flush();
+        room.maybe_compact();
+        rooms.store.flush();
+        assert!(rooms.store.load("g1").unwrap().snapshot.is_some_and(|s| s.sealed));
+        assert!(!contains(&raw_bytes(&db), "launch codes"), "the snapshot is stored in the clear");
+        drop((room, rooms));
+
+        assert!(rooms_at(&db).get("g1", "wp_viewer_other").is_err(), "another key must not open it");
+        let reopened = rooms_at(&db).get("g1", KEY).unwrap();
+        assert_eq!(reopened.graph.snapshot().title, "Quarterly secrets");
+    }
+
+    #[test]
+    fn plaintext_from_before_encryption_is_sealed_when_the_graph_is_next_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("w.db");
+        // A database as the previous version left it: no `enc` column, plaintext rows.
+        let old = Graph::new();
+        old.create_node(NodeId::new(), "old plaintext", Place::at_origin(Vec2::new(0, 0)));
+        let update = old.encode_state();
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE graphs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 CREATE TABLE updates (seq INTEGER PRIMARY KEY AUTOINCREMENT, graph TEXT NOT NULL REFERENCES graphs(id), data BLOB NOT NULL);
+                 CREATE TABLE snapshots (graph TEXT PRIMARY KEY REFERENCES graphs(id), data BLOB NOT NULL);
+                 INSERT INTO graphs (id) VALUES ('g1');",
+            )
+            .unwrap();
+            conn.execute("INSERT INTO updates (graph, data) VALUES ('g1', ?1)", [&update]).unwrap();
+        }
+        assert!(contains(&raw_bytes(&db), "old plaintext"));
+
+        let rooms = rooms_at(&db);
+        assert_eq!(rooms.get("g1", KEY).unwrap().graph.places().len(), 1, "old data still loads");
+        rooms.store.flush();
+        let stored = rooms.store.load("g1").unwrap();
+        // (Opening may add updates of its own, such as numbering nodes; those are sealed too.)
+        assert!(stored.snapshot.is_some_and(|s| s.sealed) && stored.updates.iter().all(|u| u.sealed));
+        assert!(!contains(&raw_bytes(&db), "old plaintext"), "plaintext left in the file");
+        drop(rooms);
+        assert_eq!(rooms_at(&db).get("g1", KEY).unwrap().graph.places().len(), 1);
     }
 
     fn batch(ops: serde_json::Value) -> Batch {
@@ -397,7 +495,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("w.db");
         let rooms = rooms_at(&db);
-        let room = rooms.get("agent").unwrap();
+        let room = rooms.get("agent", KEY).unwrap();
         let mut client = room.relay.subscribe(); // stands in for a connected browser
 
         let results = room
@@ -421,7 +519,7 @@ mod tests {
         let expected = room.graph.snapshot();
         rooms.store.flush();
         drop((client, room, rooms));
-        let reopened = rooms_at(&db).get("agent").unwrap().graph.snapshot();
+        let reopened = rooms_at(&db).get("agent", KEY).unwrap().graph.snapshot();
         assert_eq!(reopened.nodes, expected.nodes);
         assert_eq!(reopened.edges, expected.edges);
         assert_eq!(reopened.nodes.values().filter_map(|n| n.key).max(), Some(2));
@@ -430,7 +528,7 @@ mod tests {
     #[test]
     fn each_actor_undoes_only_their_own_batches_and_the_log_says_who() {
         let dir = tempfile::tempdir().unwrap();
-        let room = rooms_at(&dir.path().join("w.db")).get("undo").unwrap();
+        let room = rooms_at(&dir.path().join("w.db")).get("undo", KEY).unwrap();
         let add = |title: &str, actor: &str| {
             room.apply(&batch(serde_json::json!([{ "op": "create_node", "title": title }])), actor).unwrap();
         };
@@ -460,7 +558,7 @@ mod tests {
     #[test]
     fn peers_with_the_same_name_are_still_different_peers() {
         let dir = tempfile::tempdir().unwrap();
-        let room = rooms_at(&dir.path().join("w.db")).get("peers").unwrap();
+        let room = rooms_at(&dir.path().join("w.db")).get("peers", KEY).unwrap();
         let (one, two) = (Peer::new("p1", "alex"), Peer::new("p2", "alex"));
         let add = |title: &str, who: &Peer| {
             room.apply(&batch(serde_json::json!([{ "op": "create_node", "title": title }])), who.clone()).unwrap();
@@ -490,7 +588,7 @@ mod tests {
     fn background_is_owner_set_and_edges_stay_readable() {
         let dir = tempfile::tempdir().unwrap();
         let rooms = rooms_at(&dir.path().join("w.db"));
-        let room = rooms.get("g1").unwrap();
+        let room = rooms.get("g1", KEY).unwrap();
         assert!(room.set_background("owner", "blue").is_err());
         // The default edge colours are light, so a light canvas recolours them.
         let (color, changed) = room.set_background("owner", "#F0F0F0").unwrap();
