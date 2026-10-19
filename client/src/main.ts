@@ -44,7 +44,6 @@ function upright(a: Vec2, b: Vec2): number {
 }
 
 const FONT = "system-ui, sans-serif";
-const EMOJI_FONT = `${FONT}, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji"`;
 /** How long the hint at the bottom stays when nothing is happening. */
 const HINT_IDLE_MS = 5000;
 
@@ -254,6 +253,8 @@ async function main() {
   let connecting: Connecting | null = null;
   /** A link the user has drawn and is choosing the type of (the picker is open). */
   let pendingLink: { from: string; to: string } | null = null;
+  /** The type picked for the last link drawn; the picker starts on it. */
+  let lastLinkType: string | null = null;
   let picker: HTMLElement | null = null;
   /** What is on the canvas, as of the last draw; the export reads it. */
   let lastScene: Scene = { background: "", nodes: [], edges: [] };
@@ -473,8 +474,7 @@ async function main() {
       node.addChild(label);
       labels.push(label);
       const key = graph.key(id);
-      const hasNote = graph.note(id).trim() !== "";
-      scene.nodes.push({ id, x: p.x, y: p.y, type, lines, untitled: !title, key, hasNote });
+      scene.nodes.push({ id, x: p.x, y: p.y, type, lines, untitled: !title, key });
       if (key !== undefined) {
         // The short key (#12): how people and agents refer to this node. It never changes, even on rename.
         // It sits just below the node (a two-line title can fill the corner, and the corners of most shapes are empty canvas),
@@ -489,15 +489,6 @@ async function main() {
         badge.position.set(NODE_W, NODE_H + 12);
         node.addChild(badge);
         labels.push(badge);
-      }
-      if (hasNote) {
-        // The note lives in the margin; this shows that there is one. It hangs off the node's top-left corner, clear of the title.
-        const icon = new Text({ text: "🗒", style: { fontSize: 12, fontFamily: EMOJI_FONT }, resolution: labelResolution() });
-        icon.alpha = 0.85;
-        icon.anchor.set(0, 1);
-        icon.position.set(2, -3);
-        node.addChild(icon);
-        labels.push(icon);
       }
 
       world.addChild(node);
@@ -925,6 +916,7 @@ async function main() {
         box.remove();
         picker = null;
         pendingLink = null;
+        lastLinkType = t.name;
         if (l) void act([{ op: "link", from: l.from, to: l.to, edge_type: t.name }], "link");
         render();
       };
@@ -947,7 +939,7 @@ async function main() {
     const r = box.getBoundingClientRect();
     box.style.left = `${Math.max(8, Math.min(at.x + 8, window.innerWidth - r.width - 8))}px`;
     box.style.top = `${Math.max(8, Math.min(at.y + 8, window.innerHeight - r.height - 8))}px`;
-    buttons[0]!.focus();
+    (buttons[reg.edgeTypes.findIndex((t) => t.name === lastLinkType)] ?? buttons[0]!).focus();
     render();
   }
   // A press anywhere outside the list closes it.
