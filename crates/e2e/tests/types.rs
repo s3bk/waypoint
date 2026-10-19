@@ -26,7 +26,7 @@ async fn types_are_styled_through_the_api_and_the_panel() {
     // The owner sets the canvas colour; the page and the edge types follow.
     let set = stack.call(&keys, &keys.owner, "PUT", "/background", Some(json!({ "color": "#f4f1ea" })));
     assert_eq!(set.0, 200, "{}", set.1);
-    assert_eq!(set.1["recoloured_edge_types"], json!(["depends_on"]));
+    assert_eq!(set.1["recoloured_edge_types"], json!(["destinations"]));
     until("the canvas colour", || async {
         page.js("return document.documentElement.style.background").await.as_str().is_some_and(|c| c.contains("244, 241, 234") || c.contains("f4f1ea"))
     })

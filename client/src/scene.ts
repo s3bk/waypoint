@@ -22,7 +22,7 @@ export interface SceneNode {
 }
 
 export interface SceneEdge {
-  /** Where the line leaves the dependant and where it reaches the dependency. */
+  /** Where the line leaves the source and where it reaches the destination. */
   a: Vec2;
   b: Vec2;
   type: EdgeType;

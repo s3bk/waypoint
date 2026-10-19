@@ -10,7 +10,7 @@ async fn an_edge_closing_a_cycle_is_flagged_and_kept() {
     let stack = Stack::start();
     let keys = stack.new_graph();
     let page = stack.page(&keys.editor).await;
-    let batch = json!({ "ops": [{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "depends_on": ["$0"] }] });
+    let batch = json!({ "ops": [{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }] });
     assert_eq!(stack.call(&keys, &keys.editor, "POST", "/apply", Some(batch)).0, 200);
     until("both nodes", || async { page.edge_count().await == 1 }).await;
 

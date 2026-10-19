@@ -41,7 +41,7 @@ fn anchor_subtree(places: &BTreeMap<NodeId, Place>, root: NodeId) -> BTreeSet<No
 /// (`edges` are the live edges, direction ignored).
 ///
 /// Each such node moves to its nearest remaining neighbour that is not one of
-/// its own dependants, since that would make an anchor cycle, or to the scope
+/// its own sources, since that would make an anchor cycle, or to the scope
 /// origin if there is none. Offsets are recomputed so no node changes
 /// position. Returns only the places that change, sorted by id.
 pub fn repair_anchors(places: &BTreeMap<NodeId, Place>, edges: &[(NodeId, NodeId)]) -> Vec<(NodeId, Place)> {
@@ -77,8 +77,8 @@ pub fn repair_anchors(places: &BTreeMap<NodeId, Place>, edges: &[(NodeId, NodeId
     work.into_iter().filter(|(n, p)| places[n] != *p).collect()
 }
 
-/// Whether adding "`from` depends on `to`" to `edges` (each `(x, y)` meaning x
-/// depends on y) would close a dependency cycle. A self-dependency counts.
+/// Whether adding a link from `from` to `to` to `edges` (each `(x, y)` meaning x
+/// links to y) would close a cycle. A self-link counts.
 pub fn creates_cycle(edges: &[(NodeId, NodeId)], from: NodeId, to: NodeId) -> bool {
     if from == to {
         return true;
@@ -103,7 +103,7 @@ pub fn creates_cycle(edges: &[(NodeId, NodeId)], from: NodeId, to: NodeId) -> bo
 
 /// The edges to add when `node` is deleted so that chains through it survive:
 /// for every `D -> node` and `node -> P` of the same edge type, `D -> P`.
-/// Deleting B from A <- B <- C leaves C depending on A.
+/// Deleting B from A <- B <- C leaves C linking to A.
 ///
 /// Edges are `(from, to, type)`. An edge is identified by its ordered pair, so a
 /// pair that already has an edge (of any type) is skipped, as are self-links. Adding these cannot close a cycle: `D` already
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn never_anchors_a_node_to_its_own_dependant() {
+    fn never_anchors_a_node_to_its_own_source() {
         let (n, p) = scene();
         // a (anchored to root) loses root; its only neighbour is b, which hangs off a.
         let edges = [(n[2], n[1])];
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn dependants_follow_a_reanchored_node() {
+    fn sources_follow_a_reanchored_node() {
         let (_, p) = scene();
         let before = derive_positions(&p);
         let out = apply(&p, repair_anchors(&p, &[]));
@@ -203,9 +203,9 @@ mod tests {
     #[test]
     fn cycle_detection() {
         let n: Vec<NodeId> = (0..4).map(|_| NodeId::new()).collect();
-        let edges = [(n[0], n[1]), (n[1], n[2])]; // 0 depends on 1 depends on 2
-        assert!(creates_cycle(&edges, n[0], n[0]), "self dependency");
-        assert!(creates_cycle(&edges, n[2], n[0]), "2 depends on 0 closes the loop");
+        let edges = [(n[0], n[1]), (n[1], n[2])]; // 0 -> 1 -> 2
+        assert!(creates_cycle(&edges, n[0], n[0]), "self link");
+        assert!(creates_cycle(&edges, n[2], n[0]), "2 links to 0 closes the loop");
         assert!(creates_cycle(&edges, n[1], n[0]), "direct reverse");
         assert!(!creates_cycle(&edges, n[0], n[2]), "a shortcut is fine");
         assert!(!creates_cycle(&edges, n[3], n[0]), "an unrelated node is fine");
@@ -225,13 +225,13 @@ mod tests {
     #[test]
     fn deleting_the_middle_of_a_chain_joins_its_ends() {
         let n: Vec<NodeId> = (0..3).map(|_| NodeId::new()).collect();
-        // n0 depends on n1 depends on n2.
+        // n0 -> n1 -> n2.
         let edges = [(n[0], n[1], ty(1)), (n[1], n[2], ty(1))];
         assert_eq!(bridge_edges(&edges, n[1]), vec![(n[0], n[2], ty(1))]);
     }
 
     #[test]
-    fn several_dependants_and_prerequisites_are_all_joined() {
+    fn several_sources_and_destinations_are_all_joined() {
         let n: Vec<NodeId> = (0..5).map(|_| NodeId::new()).collect();
         let edges = [
             (n[0], n[2], ty(1)),
@@ -239,7 +239,7 @@ mod tests {
             (n[2], n[3], ty(1)),
             (n[2], n[4], ty(1)),
         ];
-        assert_eq!(bridge_edges(&edges, n[2]).len(), 4, "2 dependants x 2 prerequisites");
+        assert_eq!(bridge_edges(&edges, n[2]).len(), 4, "2 sources x 2 destinations");
     }
 
     #[test]
@@ -281,7 +281,7 @@ mod tests {
         edges.extend(&bridges);
         edges.retain(|e| e.0 != n[1] && e.1 != n[1]);
         let pairs: Vec<_> = edges.iter().map(|e| (e.0, e.1)).collect();
-        // Re-adding any existing dependency must not look like a new cycle.
+        // Re-adding any existing destination must not look like a new cycle.
         for &(a, b) in &pairs {
             let others: Vec<_> = pairs.iter().copied().filter(|&e| e != (a, b)).collect();
             assert!(!creates_cycle(&others, a, b), "{a:?} -> {b:?} closes a cycle");

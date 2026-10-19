@@ -57,7 +57,7 @@ async fn agents_edit_while_a_browser_watches() {
     let page = stack.page(&keys.viewer).await;
 
     // HTTP: a batch is atomic and `$N` names a node made earlier in it.
-    let batch = json!({ "ops": [{ "op": "create_node", "title": "root" }, { "op": "create_node", "title": "child", "depends_on": ["$0"] }] });
+    let batch = json!({ "ops": [{ "op": "create_node", "title": "root" }, { "op": "create_node", "title": "child", "destinations": ["$0"] }] });
     assert_eq!(stack.call(&keys, &keys.editor, "POST", "/apply", Some(batch)).0, 200);
     until("the browser to show the batch", || async { page.titles().await == ["child", "root"] }).await;
     assert_eq!(page.edge_count().await, 1);
@@ -73,7 +73,7 @@ async fn agents_edit_while_a_browser_watches() {
     let mut mcp = Mcp::start(&stack, &keys.editor);
     assert!(mcp.rpc("initialize", json!({ "protocolVersion": "2024-11-05" }))["result"].is_object());
     assert_eq!(mcp.rpc("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 25);
-    let made = mcp.tool("create_node", json!({ "title": "layout", "depends_on": ["#1"] }));
+    let made = mcp.tool("create_node", json!({ "title": "layout", "destinations": ["#1"] }));
     assert_ne!(made["result"]["isError"], true, "{made}");
     until("the browser to show the MCP node", || async { page.titles().await.contains(&"layout".to_owned()) }).await;
     assert_eq!(page.edge_count().await, 2);

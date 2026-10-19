@@ -26,7 +26,7 @@ pub const DEFAULT_BACKGROUND: &str = "#14161a";
 
 /// The seeded node type, the same id in every graph. Untyped nodes use it.
 pub const DEFAULT_NODE_TYPE: Uuid = Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0101);
-/// The seeded edge type (`EdgeTypeId::DEPENDS_ON`). Untyped edges use it.
+/// The seeded edge type (`EdgeTypeId::DEFAULT`). Untyped edges use it.
 pub const DEFAULT_EDGE_TYPE: Uuid = Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0001);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,9 +62,9 @@ pub struct EdgeType {
     pub color: String,
     pub width: u32,
     pub line_style: String,
-    /// What the line ends in at the dependant (`from`) end.
+    /// What the line ends in at the source (`from`) end.
     pub start: String,
-    /// What the line ends in at the dependency (`to`) end.
+    /// What the line ends in at the destination (`to`) end.
     pub end: String,
     pub text_color: String,
 }
@@ -128,8 +128,8 @@ pub fn builtin_node() -> NodeType {
 pub fn builtin_edge() -> EdgeType {
     EdgeType {
         id: DEFAULT_EDGE_TYPE,
-        name: "depends_on".into(),
-        label: "depends on".into(),
+        name: "link".into(),
+        label: "link".into(),
         color: "#8aa0bd".into(),
         width: 2,
         line_style: "solid".into(),

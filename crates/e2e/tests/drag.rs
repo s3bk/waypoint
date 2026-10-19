@@ -4,7 +4,7 @@ use common::{Stack, until};
 use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn drag_moves_one_node_and_shift_drag_takes_what_it_depends_on() {
+async fn drag_moves_one_node_and_shift_drag_takes_its_destinations() {
     let stack = Stack::start();
     let keys = stack.new_graph();
     let made = stack.call(
@@ -14,7 +14,7 @@ async fn drag_moves_one_node_and_shift_drag_takes_what_it_depends_on() {
         "/apply",
         Some(json!({ "ops": [
             { "op": "create_node", "title": "first" },
-            { "op": "create_node", "title": "second", "depends_on": ["$0"] },
+            { "op": "create_node", "title": "second", "destinations": ["$0"] },
         ] })),
     );
     assert_eq!(made.0, 200, "{}", made.1);
@@ -22,7 +22,7 @@ async fn drag_moves_one_node_and_shift_drag_takes_what_it_depends_on() {
     until("both nodes", || async { page.id_titled("second").await.is_some() && page.id_titled("first").await.is_some() }).await;
     let (first, second) = (page.id_titled("first").await.unwrap(), page.id_titled("second").await.unwrap());
 
-    // "second" depends on "first". Plain drag of "second": only it moves.
+    // "second" links to "first". Plain drag of "second": only it moves.
     let (a0, b0) = (page.rect(&first).await, page.rect(&second).await);
     let (cx, cy) = b0.center();
     page.drag((cx, cy), (cx, cy + 150)).await;
@@ -30,7 +30,7 @@ async fn drag_moves_one_node_and_shift_drag_takes_what_it_depends_on() {
     let a1 = page.rect(&first).await;
     assert_eq!((a1.x, a1.y), (a0.x, a0.y), "first did not move");
 
-    // Shift-drag of "second": it moves together with what it depends on.
+    // Shift-drag of "second": it moves together with its destinations.
     let (a1, b1) = (page.rect(&first).await, page.rect(&second).await);
     let (cx, cy) = b1.center();
     page.drag_shift((cx, cy), (cx + 40, cy + 120)).await;
@@ -46,7 +46,7 @@ async fn drag_moves_one_node_and_shift_drag_takes_what_it_depends_on() {
     let a3 = page.rect(&first).await;
     assert_eq!((a3.x - a2.x, a3.y - a2.y), (-30, 90), "first moved along");
 
-    // Shift-dragging "first", which depends on nothing, moves only it.
+    // Shift-dragging "first", which has no destinations, moves only it.
     let (a3, b3) = (page.rect(&first).await, page.rect(&second).await);
     let (cx, cy) = a3.center();
     page.drag_shift((cx, cy), (cx, cy - 60)).await;

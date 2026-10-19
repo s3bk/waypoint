@@ -33,7 +33,7 @@ id_type!(EdgeTypeId);
 
 impl EdgeTypeId {
     /// Seeded edge types get fixed ids, the same in every graph (DATA_MODEL.md).
-    pub const DEPENDS_ON: EdgeTypeId = EdgeTypeId(Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0001));
+    pub const DEFAULT: EdgeTypeId = EdgeTypeId(Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_0001));
 }
 
 /// Fixed node footprint in world units, shared by every node so all clients
@@ -101,23 +101,23 @@ pub enum Actor {
 /// - `"$0"`, `"$1"`, ...: the node created by the op at that index earlier in
 ///   the same batch, so a batch can create a node and link to it.
 ///
-/// Edges are identified by the ordered pair of their ends, "from depends on to".
+/// Edges are identified by the ordered pair of their ends, "from" is the source and "to" the destination.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
-    /// Add a node. It is placed next to the first `depends_on` node (or near
-    /// the first of `dependants`, or below the existing content) and the layout
-    /// makes room for it.
+    /// Add a node. It is placed next to the first of its `destinations` (or near
+    /// the first of its `sources`, or below the existing content) and the layout
+    /// makes room for it. The old names `depends_on` and `dependants` still work.
     CreateNode {
         title: String,
-        /// Nodes the new node depends on.
-        #[serde(default)]
-        depends_on: Vec<String>,
-        /// Nodes that depend on the new node.
-        #[serde(default)]
-        dependants: Vec<String>,
-        /// Top-left corner to put the node at when it has no `depends_on` and no
-        /// `dependants`; the layout still makes room.
+        /// Nodes the new node links to (it is their source).
+        #[serde(default, alias = "depends_on")]
+        destinations: Vec<String>,
+        /// Nodes that link to the new node (it is their destination).
+        #[serde(default, alias = "dependants")]
+        sources: Vec<String>,
+        /// Top-left corner to put the node at when it has no `destinations` and no
+        /// `sources`; the layout still makes room.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,10 +127,10 @@ pub enum Op {
         node_type: Option<String>,
     },
     RenameNode { node: String, title: String },
-    /// Delete a node. Links through it are joined: deleting B from "C depends
-    /// on B depends on A" leaves "C depends on A".
+    /// Delete a node. Links through it are joined: deleting B from "C -> B -> A"
+    /// leaves "C -> A".
     DeleteNode { node: String },
-    /// `from` depends on `to`. Refused if it would close a cycle. `edge_type`
+    /// A link from `from` (the source) to `to` (the destination). Refused if it would close a cycle. `edge_type`
     /// names an edge type; an existing link is changed to it.
     Link {
         from: String,
@@ -140,13 +140,13 @@ pub enum Op {
     },
     Unlink { from: String, to: String },
     /// Move a node so its top-left corner is at `(x, y)`, then make room. With
-    /// `with_dependencies` the nodes it depends on (and what they depend on) move along.
+    /// `with_destinations` the nodes it links to (and what they link to) move along.
     MoveNode {
         node: String,
         x: i32,
         y: i32,
-        #[serde(default, alias = "with_subtree")]
-        with_dependencies: bool,
+        #[serde(default, alias = "with_dependencies", alias = "with_subtree")]
+        with_destinations: bool,
     },
     /// Give a node a type by name; `"default"` goes back to the default type.
     SetNodeType { node: String, node_type: String },

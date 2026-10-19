@@ -27,7 +27,7 @@ pub fn summary(snap: &Snapshot) -> Value {
 }
 
 /// The whole graph in one response: every node (key, title, note, position),
-/// every link as `from`/`to` refs ("from depends on to"), and set-aside links.
+/// every link as `from`/`to` refs ("from is the source, to the destination"), and set-aside links.
 pub fn full(snap: &Snapshot) -> Value {
     let pos = derive_positions(&snap.places());
     let label = |id: NodeId| snap.nodes[&id].key.map(|k| format!("#{k}")).unwrap_or_else(|| id.0.to_string());
@@ -52,12 +52,12 @@ pub fn full(snap: &Snapshot) -> Value {
         "links": links(&snap.edges),
         "conflicts": links(&snap.conflicted),
         "types": types(snap),
-        "meaning": "a link from depends on to",
+        "meaning": "a link from source to destination",
     })
 }
 
 /// Links the server set aside because two people's changes together closed a
-/// dependency cycle. They are not in any other result; `unlink_nodes` removes one.
+/// cycle. They are not in any other result; `unlink_nodes` removes one.
 pub fn conflicts(snap: &Snapshot) -> Value {
     let label = |id: NodeId| snap.nodes[&id].key.map(|k| format!("#{k}")).unwrap_or_else(|| id.0.to_string());
     let title = |id: NodeId| snap.nodes[&id].title.clone();
@@ -65,7 +65,7 @@ pub fn conflicts(snap: &Snapshot) -> Value {
         "conflicts": snap.conflicted.iter().map(|e| json!({
             "from": label(e.from), "from_title": title(e.from),
             "to": label(e.to), "to_title": title(e.to),
-            "meaning": "from depends on to; this link would close a dependency cycle",
+            "meaning": "from is the source and to the destination; this link would close a cycle",
         })).collect::<Vec<_>>(),
     })
 }
@@ -99,19 +99,19 @@ pub fn node(snap: &Snapshot, reference: &str) -> Result<Value, String> {
     };
     let mut v = brief(n);
     v["position"] = json!({ "x": pos[&id].x, "y": pos[&id].y });
-    v["depends_on"] = Value::Array(list(&|e| (e.from == id).then_some(e.to)));
-    v["dependants"] = Value::Array(list(&|e| (e.to == id).then_some(e.from)));
+    v["destinations"] = Value::Array(list(&|e| (e.from == id).then_some(e.to)));
+    v["sources"] = Value::Array(list(&|e| (e.to == id).then_some(e.from)));
     v["note"] = json!(n.note);
     v["node_type"] = json!(snap.node_type(n.type_id).name);
     Ok(v)
 }
 
 /// The graph in Graphviz DOT, for `dot -Tsvg` or for reading. An arrow
-/// `A -> B` means "A depends on B". Set-aside (conflicted) links are dashed red.
+/// `A -> B` means "A links to B". Set-aside (conflicted) links are dashed red.
 pub fn dot(snap: &Snapshot) -> String {
     let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " "));
     let name = |id: NodeId| q(&id.0.to_string());
-    let mut out = String::from("digraph waypoint {\n  rankdir=RL; // an arrow A -> B means \"A depends on B\"\n  node [shape=box, style=rounded];\n");
+    let mut out = String::from("digraph waypoint {\n  rankdir=RL; // an arrow A -> B means \"A links to B\"\n  node [shape=box, style=rounded];\n");
     let mut nodes: Vec<&NodeRec> = snap.nodes.values().collect();
     nodes.sort_by_key(|n| (n.key.is_none(), n.key, n.id));
     for n in nodes {
@@ -132,16 +132,16 @@ pub fn dot(snap: &Snapshot) -> String {
     out
 }
 
-/// The subgraph within `depth` links of a node. `direction` is `"dependencies"`
-/// (what it depends on, transitively), `"dependants"` (what depends on it) or
-/// `"both"`.
+/// The subgraph within `depth` links of a node. `direction` is `"destinations"`
+/// (what it links to, transitively), `"sources"` (what links to it) or `"both"`.
+/// The old `"dependencies"` and `"dependants"` mean the same.
 pub fn neighbours(snap: &Snapshot, reference: &str, direction: &str, depth: usize) -> Result<Value, String> {
     let root = resolve_ref(&snap.nodes, &[], reference)?;
     let (down, up) = match direction {
-        "dependencies" => (true, false),
-        "dependants" => (false, true),
+        "destinations" | "dependencies" => (true, false),
+        "sources" | "dependants" => (false, true),
         "both" => (true, true),
-        other => return Err(format!("direction must be \"dependencies\", \"dependants\" or \"both\", not {other:?}")),
+        other => return Err(format!("direction must be \"destinations\", \"sources\" or \"both\", not {other:?}")),
     };
     let depth = depth.clamp(1, MAX_DEPTH);
     let mut next: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
@@ -181,7 +181,7 @@ pub fn neighbours(snap: &Snapshot, reference: &str, direction: &str, depth: usiz
         "root": brief(&snap.nodes[&root]),
         "nodes": nodes.into_iter().map(|(d, n)| { let mut v = brief(n); v["distance"] = json!(d); v }).collect::<Vec<_>>(),
         "links": snap.edges.iter().filter(|e| included.contains(&e.from) && included.contains(&e.to))
-            .map(|e| json!({ "from": label(e.from), "to": label(e.to), "meaning": "from depends on to" })).collect::<Vec<_>>(),
+            .map(|e| json!({ "from": label(e.from), "to": label(e.to), "meaning": "from is the source, to the destination" })).collect::<Vec<_>>(),
         "truncated": truncated,
     }))
 }

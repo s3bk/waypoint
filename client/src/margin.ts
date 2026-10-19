@@ -142,8 +142,8 @@ export function setupMargin(root: HTMLElement, hooks: MarginHooks) {
     holder.replaceChildren();
     const edges = graph.edges();
     const around: { id: string; rel: string }[] = [
-      ...edges.filter((e) => e.from === sel).map((e) => ({ id: e.to, rel: "depends on" })),
-      ...edges.filter((e) => e.to === sel).map((e) => ({ id: e.from, rel: "blocks" })),
+      ...edges.filter((e) => e.from === sel).map((e) => ({ id: e.to, rel: "destination" })),
+      ...edges.filter((e) => e.to === sel).map((e) => ({ id: e.from, rel: "source" })),
     ].filter((n) => graph.note(n.id).trim());
     const visible = expanded ? around : around.slice(0, NEIGHBOURS_SHOWN);
     for (const { id, rel } of visible) {

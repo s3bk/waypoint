@@ -1,7 +1,7 @@
 //! A first layout for a batch of new nodes (a layered drawing, after Sugiyama):
-//! dependencies on the left, dependants to the right, one column per layer.
+//! destinations on the left, sources to the right, one column per layer.
 //!
-//! 1. Layer: a node sits one column right of its right-most dependency.
+//! 1. Layer: a node sits one column right of its right-most destination.
 //! 2. Order: long links get invisible stand-in nodes in the columns they cross, then
 //!    columns are re-sorted by the average row of their neighbours, sweeping both
 //!    ways, keeping the ordering with the fewest crossings.
@@ -36,7 +36,7 @@ fn height(item: &Item) -> f64 {
 }
 
 /// Top-left positions for `nodes`, with the top-left corner of the drawing at the
-/// origin. `edges` are `(from, to)` pairs, `from` depends on `to`; pairs that are not
+/// origin. `edges` are `(from, to)` pairs, `from` links to `to`; pairs that are not
 /// both in `nodes` are ignored.
 pub fn layered(nodes: &[NodeId], edges: &[(NodeId, NodeId)]) -> BTreeMap<NodeId, Vec2> {
     let index: BTreeMap<NodeId, usize> = nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
@@ -46,7 +46,7 @@ pub fn layered(nodes: &[NodeId], edges: &[(NodeId, NodeId)]) -> BTreeMap<NodeId,
         .filter(|(f, t)| f != t)
         .collect();
 
-    // Layers: longest path from a node with no dependencies.
+    // Layers: longest path from a node with no destinations.
     let n = nodes.len();
     let mut layer = vec![0usize; n];
     for _ in 0..n {
@@ -203,8 +203,8 @@ fn settle(items: &[Item], col: &[usize], y: &mut [f64]) {
     }
 }
 
-/// Places for the laid-out `nodes`: each hangs off its nearest dependency, and the ones with no
-/// dependency sit at `origin` plus their offset. `positions` are those of [`layered`].
+/// Places for the laid-out `nodes`: each hangs off its nearest destination, and the ones with no
+/// destination sit at `origin` plus their offset. `positions` are those of [`layered`].
 pub fn as_places(positions: &BTreeMap<NodeId, Vec2>, edges: &[(NodeId, NodeId)], origin: Vec2) -> Vec<(NodeId, Place)> {
     positions
         .iter()
@@ -237,9 +237,9 @@ mod tests {
     }
 
     #[test]
-    fn dependants_sit_right_of_what_they_depend_on() {
+    fn sources_sit_right_of_their_destinations() {
         let n = ids(4);
-        // 1 and 2 depend on 0, 3 depends on 1 and 0 (a long link).
+        // 1 and 2 link to 0, 3 links to 1 and 0 (a long link).
         let edges = [(n[1], n[0]), (n[2], n[0]), (n[3], n[1]), (n[3], n[0])];
         let p = layered(&n, &edges);
         assert_eq!((p[&n[0]].x, p[&n[1]].x, p[&n[3]].x), (0, COLUMN_PITCH, 2 * COLUMN_PITCH));
@@ -268,7 +268,7 @@ mod tests {
         let m = ids(4);
         let fan = layered(&m, &[(m[1], m[0]), (m[2], m[0]), (m[3], m[0])]);
         let mid = (fan[&m[1]].y + fan[&m[3]].y) / 2;
-        assert!((fan[&m[0]].y - mid).abs() <= 2, "the source sits between its dependants: {fan:?}");
+        assert!((fan[&m[0]].y - mid).abs() <= 2, "the root sits between its sources: {fan:?}");
     }
 
     #[test]

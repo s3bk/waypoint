@@ -75,7 +75,7 @@ pub fn derive_positions(places: &BTreeMap<NodeId, Place>) -> BTreeMap<NodeId, Ve
 ///   together. One place changes: the node's own offset.
 /// - otherwise only the node moves. Nodes anchored directly to it have their
 ///   offsets compensated so they stay where they are; deeper nodes follow
-///   their (unmoved) anchors. Cost is 1 + the number of direct dependants.
+///   their (unmoved) anchors. Cost is 1 + the number of direct sources.
 ///
 /// Returns only places that differ from `places`, sorted by id. Empty if the
 /// node is unknown or already at `target`.
@@ -97,14 +97,14 @@ pub fn move_node(
     moved.off = moved.off + delta;
 
     if !with_subtree {
-        // Measure rather than assume `-delta`: a direct dependant that sits in
+        // Measure rather than assume `-delta`: a direct source that sits in
         // an anchor cycle is origin-anchored and did not move at all.
         let now = derive_positions(&after);
-        let dependants: Vec<NodeId> =
+        let sources: Vec<NodeId> =
             places.iter().filter(|(_, p)| p.anchor == Some(id)).map(|(&n, _)| n).collect();
-        for n in dependants {
+        for n in sources {
             let shift = before[&n] - now[&n];
-            let child = after.get_mut(&n).expect("dependant is in places");
+            let child = after.get_mut(&n).expect("source is in places");
             child.off = child.off + shift;
         }
     }
@@ -112,8 +112,8 @@ pub fn move_node(
     after.into_iter().filter(|(n, p)| places[n] != *p).collect()
 }
 
-/// `id` and everything it depends on, directly or not. An edge `(from, to)` means "from depends on to".
-pub fn dependency_group(edges: &[(NodeId, NodeId)], id: NodeId) -> BTreeSet<NodeId> {
+/// `id` and everything it links to, directly or not. An edge `(from, to)` means "from" links to "to".
+pub fn destination_group(edges: &[(NodeId, NodeId)], id: NodeId) -> BTreeSet<NodeId> {
     let mut group = BTreeSet::from([id]);
     let mut queue = vec![id];
     while let Some(n) = queue.pop() {
@@ -127,7 +127,7 @@ pub fn dependency_group(edges: &[(NodeId, NodeId)], id: NodeId) -> BTreeSet<Node
 }
 
 /// The places that change when `id` is dragged to `target` together with all
-/// it depends on ([`dependency_group`]), which move rigidly by the same offset.
+/// it links to ([`destination_group`]), which move rigidly by the same offset.
 ///
 /// A member whose anchor is outside the group takes the offset in its own place;
 /// a member anchored to another member follows it. A node outside the group that
@@ -145,7 +145,7 @@ pub fn move_group(
     if delta == Vec2::ZERO {
         return Vec::new();
     }
-    let group = dependency_group(edges, id);
+    let group = destination_group(edges, id);
     let mut after = places.clone();
     for (n, place) in after.iter_mut() {
         let member = group.contains(n);
@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn drag_with_subtree_is_one_write_and_moves_dependants() {
+    fn drag_with_subtree_is_one_write_and_moves_sources() {
         let (n, places) = chain();
         let changes = move_node(&places, n[1], v(150, 40), true);
         assert_eq!(changes.len(), 1);
@@ -250,11 +250,11 @@ mod tests {
     }
 
     #[test]
-    fn drag_single_node_leaves_dependants_in_place() {
+    fn drag_single_node_leaves_sources_in_place() {
         let (n, places) = chain();
         let before = derive_positions(&places);
         let changes = move_node(&places, n[1], v(150, 40), false);
-        assert_eq!(changes.len(), 2); // the node, and its one direct dependant
+        assert_eq!(changes.len(), 2); // the node, and its one direct source
         let pos = derive_positions(&apply(&places, changes));
         assert_eq!(pos[&n[1]], v(150, 40));
         for i in [0, 2, 3, 4] {
@@ -263,12 +263,12 @@ mod tests {
     }
 
     #[test]
-    fn drag_root_single_with_several_dependants() {
+    fn drag_root_single_with_several_sources() {
         let (n, mut places) = chain();
         places.insert(n[4], Place { anchor: Some(n[0]), off: v(0, 80) });
         let before = derive_positions(&places);
         let changes = move_node(&places, n[0], v(0, 0), false);
-        assert_eq!(changes.len(), 3); // root + two direct dependants
+        assert_eq!(changes.len(), 3); // root + two direct sources
         let pos = derive_positions(&apply(&places, changes));
         assert_eq!(pos[&n[0]], v(0, 0));
         for i in 1..5 {
@@ -312,8 +312,8 @@ mod tests {
     }
 
     #[test]
-    fn group_drag_moves_what_the_node_depends_on_and_nothing_else() {
-        // main depends on dep (dep is not anchored to main); other hangs off main by its anchor only.
+    fn group_drag_moves_what_the_node_links_to_and_nothing_else() {
+        // main links to dep (dep is not anchored to main); other hangs off main by its anchor only.
         let n = ids(4);
         let (main, dep, deeper, other) = (n[0], n[1], n[2], n[3]);
         let mut places = BTreeMap::new();
@@ -325,9 +325,9 @@ mod tests {
         let moved = apply(&places, move_group(&places, &edges, main, v(10, 50)));
         let pos = derive_positions(&moved);
         assert_eq!(pos[&main], v(10, 50));
-        assert_eq!(pos[&dep], v(310, 50), "a dependency moves along");
-        assert_eq!(pos[&deeper], v(310, 150), "and what it depends on");
+        assert_eq!(pos[&dep], v(310, 50), "a destination moves along");
+        assert_eq!(pos[&deeper], v(310, 150), "and what it links to");
         assert_eq!(pos[&other], v(0, 200), "an unrelated node anchored under main stays put");
-        assert_eq!(dependency_group(&edges, dep), BTreeSet::from([dep, deeper]), "main is not a dependency of dep");
+        assert_eq!(destination_group(&edges, dep), BTreeSet::from([dep, deeper]), "main is not a destination of dep");
     }
 }

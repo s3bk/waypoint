@@ -1,6 +1,6 @@
 # Waypoint
 
-Collaborative, real-time project dependency graphs for humans and AI agents.
+Collaborative, real-time project graphs for humans and AI agents.
 Design: [DESIGN.md](DESIGN.md). Data model and API: [DATA_MODEL.md](DATA_MODEL.md).
 
 ## Layout
@@ -55,8 +55,8 @@ rhombus), round or square corners, background and text colour (contrast at least
 (1-10), solid/dashed/dotted, start and end arrows, label (may be empty). Edge
 colours must read against the canvas colour, which only the owner can change
 (`PUT /api/graphs/{graph}/background`). The margin and panels follow the canvas
-colour (dark canvas, dark theme). Types are looks only: every link is a
-dependency.
+colour (dark canvas, dark theme). Types are looks only: every link goes
+from a source to a destination.
 
 ## HTTP API
 
@@ -64,7 +64,7 @@ dependency.
 reads: `GET /api/graphs/{graph}/full` (whole graph as JSON), `/types`, `/dot`,
 `/log`. Callers may send `X-Waypoint-Peer` (id, keys undo history and the log)
 and `X-Waypoint-Actor` (display name, may collide). Drag moves one node;
-Shift-drag also moves everything it depends on. Ctrl+Z / Ctrl+Shift+Z undo and
+Shift-drag also moves everything it links to. Ctrl+Z / Ctrl+Shift+Z undo and
 redo your own edits.
 
 ## Agents (MCP)
@@ -165,11 +165,11 @@ in the change log (names may repeat). Each MCP process also sends a random peer
 id, which is what keeps its undo history apart from everyone else's. 25 tools (`connect` plus):
 `get_graph`, `get_full_graph`, `search_nodes`, `get_node`, `get_neighbours`,
 `get_conflicts`, `get_dot`, `get_types`, `create_node`, `rename_node`,
-`delete_node`, `link_nodes`, `unlink_nodes`, `move_node` (`with_dependencies`
-also moves what the node depends on), `set_note`, `append_note`, `set_node_type`,
+`delete_node`, `link_nodes`, `unlink_nodes`, `move_node` (`with_destinations`
+also moves what the node links to; the old `with_dependencies` still works), `set_note`, `append_note`, `set_node_type`,
 `upsert_node_type`, `upsert_edge_type`, `remove_node_type`, `remove_edge_type`,
 `undo`, `redo`, `apply_batch`. Nodes are named by their key (`#12`, shown on each node in the UI);
-"link from -> to" means "from depends on to". Give agents an editor key (or a
+"link from -> to" means "from" is the source and "to" the destination. Give agents an editor key (or a
 viewer key to let them look only), never the owner key.
 
 ## Deploying

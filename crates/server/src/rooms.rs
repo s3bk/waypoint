@@ -403,7 +403,7 @@ mod tests {
         let results = room
             .apply(&batch(serde_json::json!([
                 { "op": "create_node", "title": "design" },
-                { "op": "create_node", "title": "build", "depends_on": ["$0"] },
+                { "op": "create_node", "title": "build", "destinations": ["$0"] },
             ])), "tester")
             .unwrap();
         assert_eq!((results[0]["key"].as_u64(), results[1]["key"].as_u64()), (Some(1), Some(2)));
@@ -494,12 +494,12 @@ mod tests {
         assert!(room.set_background("owner", "blue").is_err());
         // The default edge colours are light, so a light canvas recolours them.
         let (color, changed) = room.set_background("owner", "#F0F0F0").unwrap();
-        assert_eq!((color.as_str(), changed.as_slice()), ("#f0f0f0", ["depends_on".to_owned()].as_slice()));
+        assert_eq!((color.as_str(), changed.as_slice()), ("#f0f0f0", ["link".to_owned()].as_slice()));
         let snap = room.graph.snapshot();
         assert_eq!(snap.background, "#f0f0f0");
         assert_eq!((snap.edge_types[0].color.as_str(), snap.edge_types[0].text_color.as_str()), ("#000000", "#000000"));
         // A dark canvas needs no change to dark-on-dark ... but black lines are now too dark, so they flip.
-        assert_eq!(room.set_background("owner", "#202020").unwrap().1, ["depends_on".to_owned()]);
+        assert_eq!(room.set_background("owner", "#202020").unwrap().1, ["link".to_owned()]);
 
         // A client writing the colour straight into the document is put back.
         let rogue = Graph::new();

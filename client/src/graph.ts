@@ -25,15 +25,15 @@ export interface Place {
   off: Vec2;
 }
 
-/** Well-known id of the seeded `depends_on` edge type (waypoint_model::EdgeTypeId::DEPENDS_ON). */
-export const DEPENDS_ON = "00000000-0000-7000-8000-000000000001";
+/** Well-known id of the seeded `link` edge type (waypoint_model::EdgeTypeId::DEFAULT). */
+export const DEFAULT_EDGE = "00000000-0000-7000-8000-000000000001";
 
 export interface Edge {
   key: string;
   from: string;
   to: string;
   type: string;
-  /** Set by the server: this edge closes a dependency cycle and is ignored by layout and cycle checks. */
+  /** Set by the server: this edge closes a cycle and is ignored by layout and cycle checks. */
   conflicted: boolean;
 }
 
@@ -75,7 +75,7 @@ export class Graph {
   }
 
   /**
-   * `from` depends on `to`. An edge is identified by its ordered pair, so the key
+   * `from` is the source and `to` the destination. An edge is identified by its ordered pair, so the key
    * is derived from the two ends; repeating it is a no-op and a removed edge comes back.
    */
   createEdge(from: string, to: string, type: string) {
@@ -126,7 +126,7 @@ export class Graph {
     });
   }
 
-  /** Live edges that count as dependencies (conflicted ones are set aside), as `[from, to]` pairs. */
+  /** Live edges that count towards cycles (conflicted ones are set aside), as `[from, to]` pairs. */
   activePairs(): [string, string][] {
     return this.edges().filter((e) => !e.conflicted).map((e) => [e.from, e.to]);
   }
@@ -139,7 +139,7 @@ export class Graph {
   /**
    * Add a node and apply the layout changes that make room for it, as one
    * transaction. `changes` comes from the layout crate and includes the new
-   * node's own place. `link` is an optional `[from, to]` edge ("from depends
+   * node's own place. `link` is an optional `[from, to]` edge ("from is
    * on to") created with it.
    */
   addNode(id: string, title: string, changes: [string, Place][], link?: [string, string]) {
@@ -148,7 +148,7 @@ export class Graph {
         if (nodeId === id) this.createNode(id, title, place);
         else this.nodes.get(nodeId)?.set("place", JSON.stringify(place));
       }
-      if (link) this.createEdge(link[0], link[1], DEPENDS_ON);
+      if (link) this.createEdge(link[0], link[1], DEFAULT_EDGE);
     });
   }
 

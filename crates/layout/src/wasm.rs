@@ -23,7 +23,7 @@ pub fn move_node(places: &str, id: &str, x: i32, y: i32, with_subtree: bool) -> 
     Ok(serde_json::to_string(&changes)?)
 }
 
-/// Like `move_node`, but the node moves together with everything it depends on.
+/// Like `move_node`, but the node moves together with everything it links to.
 /// `edges` is JSON `[["<from>", "<to>"], ...]`. Returns JSON `[[id, place], ...]`.
 #[wasm_bindgen]
 pub fn move_group(places: &str, edges: &str, id: &str, x: i32, y: i32) -> Result<String, JsError> {
@@ -68,7 +68,7 @@ pub fn repair_anchors(places: &str, edges: &str) -> Result<String, JsError> {
     Ok(serde_json::to_string(&crate::repair_anchors(&places, &parse_edges(edges)?))?)
 }
 
-/// Would "`from` depends on `to`" close a dependency cycle?
+/// Would a link from `from` to `to` close a cycle?
 #[wasm_bindgen]
 pub fn creates_cycle(edges: &str, from: &str, to: &str) -> Result<bool, JsError> {
     Ok(crate::creates_cycle(&parse_edges(edges)?, parse_id(from)?, parse_id(to)?))

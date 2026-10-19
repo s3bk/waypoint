@@ -240,8 +240,8 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
         colorRow("text color", d.text_color, (c) => (d.text_color = c), () => `on the canvas ${ratio(background, d.text_color, MIN_CONTRAST)}`),
         numberRow("width", d.width, MIN_EDGE_WIDTH, MAX_WIDTH, (v) => (d.width = v)),
         selectRow("line style", d.line_style, LINE_STYLES, (v) => (d.line_style = v)),
-        selectRow("start (dependant)", d.start, ARROWS, (v) => (d.start = v)),
-        selectRow("end (dependency)", d.end, ARROWS, (v) => (d.end = v)),
+        selectRow("start (source)", d.start, ARROWS, (v) => (d.start = v)),
+        selectRow("end (destination)", d.end, ARROWS, (v) => (d.end = v)),
       );
       problems = () => {
         const p: string[] = [];

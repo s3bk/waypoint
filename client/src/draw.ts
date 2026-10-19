@@ -148,7 +148,7 @@ function head(g: Graphics, kind: string, tip: Vec2, toward: Vec2, color: number,
   }
 }
 
-/** An edge from `a` (the dependant's end) to `b` in the style of `t`, with `color` and `width` overriding it (selection, conflicts). */
+/** An edge from `a` (the source's end) to `b` in the style of `t`, with `color` and `width` overriding it (selection, conflicts). */
 export function drawEdge(
   g: Graphics,
   a: Vec2,

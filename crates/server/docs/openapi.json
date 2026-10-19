@@ -3,7 +3,7 @@
  "info": {
   "title": "Waypoint API",
   "version": "1",
-  "description": "Shared dependency graph. Authenticate with a graph key as a bearer token, or ?key= on any request. Docs for agents: /llms.txt"
+  "description": "Shared graph. Authenticate with a graph key as a bearer token, or ?key= on any request. Docs for agents: /llms.txt"
  },
  "paths": {
   "/api/graphs": {
@@ -184,8 +184,8 @@
        "type": "string",
        "enum": [
         "both",
-        "dependencies",
-        "dependants"
+        "destinations",
+        "sources"
        ]
       }
      },
@@ -443,14 +443,14 @@
               "title": {
                "type": "string"
               },
-              "depends_on": {
+              "destinations": {
                "type": "array",
                "items": {
                 "type": "string",
                 "description": "key (\"#12\" or \"12\"), UUID, or \"$N\" for the node created by op N of the same batch"
                }
               },
-              "dependants": {
+              "sources": {
                "type": "array",
                "items": {
                 "type": "string",
@@ -573,7 +573,7 @@
               "y": {
                "type": "integer"
               },
-              "with_dependencies": {
+              "with_destinations": {
                "type": "boolean"
               }
              }

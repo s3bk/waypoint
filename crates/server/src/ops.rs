@@ -174,7 +174,7 @@ impl Work {
         self.nodes.get(&id).map(describe).unwrap_or_else(|| format!("{id:?}"))
     }
 
-    /// Lay out the nodes of a big batch together: layers left to right by dependency, then fewer crossings.
+    /// Lay out the nodes of a big batch together: layers left to right from destinations to sources, then fewer crossings.
     fn lay_out_deferred(&mut self) {
         let Some(origin) = self.defer_to else { return };
         let nodes = std::mem::take(&mut self.deferred);
@@ -212,7 +212,10 @@ impl Work {
 
     fn edge_type_named(&self, name: &str) -> Result<&EdgeType, String> {
         let n = style::normalize_name(name)?;
-        self.edge_types.iter().find(|t| t.name == n).ok_or_else(|| {
+        // The default edge type used to be called "depends_on"; graphs made then still have it under that name.
+        let by_name = self.edge_types.iter().find(|t| t.name == n);
+        let legacy = (n == "depends_on").then(|| self.edge_types.iter().find(|t| t.id == style::DEFAULT_EDGE_TYPE)).flatten();
+        by_name.or(legacy).ok_or_else(|| {
             let names: Vec<_> = self.edge_types.iter().map(|t| t.name.as_str()).collect();
             format!("no edge type {n:?}; the types are {} (create one with upsert_edge_type)", names.join(", "))
         })
@@ -227,11 +230,11 @@ impl Work {
         }
     }
 
-    /// Add "from depends on to", refusing self-links and cycles. Returns whether it was new.
+    /// Add "from is the source, to the destination", refusing self-links and cycles. Returns whether it was new.
     /// Linking an existing pair with another `type_id` changes its type.
     fn link(&mut self, from: NodeId, to: NodeId, type_id: Option<EdgeTypeId>) -> Result<bool, String> {
         if from == to {
-            return Err(format!("{} cannot depend on itself", self.name(from)));
+            return Err(format!("{} cannot link to itself", self.name(from)));
         }
         if let Some(existing) = self.edges.iter_mut().find(|e| e.from == from && e.to == to) {
             if let Some(t) = type_id.filter(|t| *t != existing.type_id) {
@@ -240,10 +243,10 @@ impl Work {
             }
             return Ok(false);
         }
-        let type_id = type_id.unwrap_or(EdgeTypeId::DEPENDS_ON);
+        let type_id = type_id.unwrap_or(EdgeTypeId::DEFAULT);
         if layout::creates_cycle(&self.pairs(), from, to) {
             return Err(format!(
-                "{} depending on {} would create a dependency cycle ({} already depends on {}, directly or not)",
+                "linking {} to {} would create a cycle ({} already links to {}, directly or not)",
                 self.name(from),
                 self.name(to),
                 self.name(to),
@@ -257,19 +260,19 @@ impl Work {
 
     fn apply(&mut self, op: &Op) -> Result<Value, String> {
         let result = match op {
-            Op::CreateNode { title, depends_on, dependants, x, y, node_type } => {
+            Op::CreateNode { title, destinations, sources, x, y, node_type } => {
                 let title = normalize_title(title)?;
                 let node_type = node_type.as_deref().map(|n| self.node_type_named(n).map(|t| t.id)).transpose()?;
-                let deps = self.resolve_all(depends_on)?;
-                let dependants = self.resolve_all(dependants)?;
+                let deps = self.resolve_all(destinations)?;
+                let sources = self.resolve_all(sources)?;
                 let id = NodeId::new();
 
-                // Where it goes: beside what it depends on, else before what depends on it,
+                // Where it goes: beside its destinations, else before its sources,
                 // else below everything.
                 let pos = layout::derive_positions(&self.places);
                 let (parent, at) = if let Some(&p) = deps.first() {
                     (Some(p), Vec2::ZERO)
-                } else if let Some(d) = dependants.first().and_then(|d| pos.get(d)) {
+                } else if let Some(d) = sources.first().and_then(|d| pos.get(d)) {
                     (None, *d - Vec2::new(NODE_WIDTH + layout::FLOW_GAP, 0))
                 } else if let (Some(x), Some(y)) = (x, y) {
                     (None, Vec2::new(*x, *y))
@@ -294,7 +297,7 @@ impl Work {
                     for dep in deps {
                         self.link(id, dep, None)?;
                     }
-                    for d in dependants {
+                    for d in sources {
                         self.link(d, id, None)?;
                     }
                     return Ok(json!({ "op": "create_node", "id": id.0, "title": title }));
@@ -312,7 +315,7 @@ impl Work {
                 for dep in deps {
                     self.link(id, dep, None)?;
                 }
-                for d in dependants {
+                for d in sources {
                     self.link(d, id, None)?;
                 }
                 json!({ "op": "create_node", "id": id.0, "title": title })
@@ -425,7 +428,7 @@ impl Work {
                     return Ok(json!({ "op": "unlink", "from": from.0, "to": to.0, "was_conflicted": true }));
                 }
                 if !self.edges.iter().any(|e| e.from == from && e.to == to) {
-                    return Err(format!("{} does not depend on {}", self.name(from), self.name(to)));
+                    return Err(format!("{} is not linked to {}", self.name(from), self.name(to)));
                 }
                 self.edges.retain(|e| !(e.from == from && e.to == to));
                 self.writes.push(Write::Unlink { from, to });
@@ -434,9 +437,9 @@ impl Work {
                 self.set_places(changes, None);
                 json!({ "op": "unlink", "from": from.0, "to": to.0 })
             }
-            Op::MoveNode { node, x, y, with_dependencies } => {
+            Op::MoveNode { node, x, y, with_destinations } => {
                 let id = self.resolve(node)?;
-                let changes = layout::drop_node(&self.places, &self.pairs(), id, Vec2::new(*x, *y), *with_dependencies);
+                let changes = layout::drop_node(&self.places, &self.pairs(), id, Vec2::new(*x, *y), *with_destinations);
                 let moved = changes.len();
                 self.set_places(changes, None);
                 json!({ "op": "move_node", "id": id.0, "places_changed": moved })
@@ -514,7 +517,7 @@ mod tests {
     #[test]
     fn a_big_batch_without_positions_gets_a_layered_layout() {
         let g = Graph::new();
-        // Source, two branches, a join: dependencies end up left of their dependants.
+        // Source, two branches, a join: destinations end up left of their sources.
         run(&g, json!([
             { "op": "create_node", "title": "join" },
             { "op": "create_node", "title": "left" },
@@ -548,8 +551,8 @@ mod tests {
             &g,
             json!([
                 { "op": "create_node", "title": "design" },
-                { "op": "create_node", "title": "build", "depends_on": ["$0"] },
-                { "op": "create_node", "title": "ship", "depends_on": ["$1"] },
+                { "op": "create_node", "title": "build", "destinations": ["$0"] },
+                { "op": "create_node", "title": "ship", "destinations": ["$1"] },
                 { "op": "link", "from": "$2", "to": "$0" },
             ]),
         )
@@ -570,18 +573,30 @@ mod tests {
     }
 
     #[test]
-    fn a_dependant_is_placed_to_the_right_of_what_it_depends_on() {
+    fn a_source_is_placed_to_the_right_of_its_destination() {
         let g = Graph::new();
-        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "depends_on": ["$0"] }])).unwrap();
+        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }])).unwrap();
         let (a, b) = (pos_of(&g, "a"), pos_of(&g, "b"));
         assert!(b.x >= a.x + NODE_WIDTH && b.y == a.y, "a at {a:?}, b at {b:?}");
     }
 
     #[test]
-    fn nodes_created_with_dependants_go_before_them() {
+    fn the_old_names_still_work() {
+        let g = Graph::new();
+        run(&g, json!([
+            { "op": "create_node", "title": "a" },
+            { "op": "create_node", "title": "b", "depends_on": ["$0"] },
+            { "op": "create_node", "title": "c", "dependants": ["$0"] },
+            { "op": "link", "from": "$1", "to": "$2", "edge_type": "depends_on" },
+        ])).unwrap();
+        assert_eq!(g.snapshot().edges.len(), 3);
+    }
+
+    #[test]
+    fn nodes_created_with_sources_go_before_them() {
         let g = Graph::new();
         run(&g, json!([{ "op": "create_node", "title": "late" }])).unwrap();
-        run(&g, json!([{ "op": "create_node", "title": "early", "dependants": ["#1"] }])).unwrap();
+        run(&g, json!([{ "op": "create_node", "title": "early", "sources": ["#1"] }])).unwrap();
         assert!(pos_of(&g, "early").x < pos_of(&g, "late").x);
         assert_eq!(links(&g), vec!["late>early"]);
     }
@@ -589,7 +604,7 @@ mod tests {
     #[test]
     fn creating_many_nodes_never_leaves_them_overlapping() {
         let g = Graph::new();
-        let ops: Vec<_> = (0..12).map(|i| json!({ "op": "create_node", "title": format!("n{i}"), "depends_on": if i == 0 { vec![] } else { vec!["$0".to_string()] } })).collect();
+        let ops: Vec<_> = (0..12).map(|i| json!({ "op": "create_node", "title": format!("n{i}"), "destinations": if i == 0 { vec![] } else { vec!["$0".to_string()] } })).collect();
         run(&g, Value::Array(ops)).unwrap();
         let pos: Vec<_> = all_positions(&g).into_values().collect();
         for (i, a) in pos.iter().enumerate() {
@@ -603,7 +618,7 @@ mod tests {
     #[test]
     fn a_failing_op_leaves_the_graph_untouched() {
         let g = Graph::new();
-        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "depends_on": ["$0"] }])).unwrap();
+        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }])).unwrap();
         let before = (links(&g), all_positions(&g));
         // The first two ops are fine; the cycle in the third must undo everything.
         let err = run(
@@ -631,7 +646,7 @@ mod tests {
         assert!(msg(json!([{ "op": "link", "from": "#1", "to": "#1" }])).contains("itself"));
         assert!(msg(json!([{ "op": "create_node", "title": "   " }])).contains("empty"));
         assert!(msg(json!([{ "op": "link", "from": "$3", "to": "#1" }])).contains("earlier in this batch"));
-        assert!(msg(json!([{ "op": "unlink", "from": "#1", "to": "#1" }])).contains("does not depend"));
+        assert!(msg(json!([{ "op": "unlink", "from": "#1", "to": "#1" }])).contains("is not linked"));
     }
 
     #[test]
@@ -653,8 +668,8 @@ mod tests {
             &g,
             json!([
                 { "op": "create_node", "title": "a" },
-                { "op": "create_node", "title": "b", "depends_on": ["$0"] },
-                { "op": "create_node", "title": "c", "depends_on": ["$1"] },
+                { "op": "create_node", "title": "b", "destinations": ["$0"] },
+                { "op": "create_node", "title": "c", "destinations": ["$1"] },
             ]),
         )
         .unwrap();
@@ -679,8 +694,8 @@ mod tests {
             &g,
             json!([
                 { "op": "create_node", "title": "a" },
-                { "op": "create_node", "title": "b", "depends_on": ["$0"] },
-                { "op": "create_node", "title": "c", "depends_on": ["$1"] },
+                { "op": "create_node", "title": "b", "destinations": ["$0"] },
+                { "op": "create_node", "title": "c", "destinations": ["$1"] },
             ]),
         )
         .unwrap();
@@ -695,11 +710,11 @@ mod tests {
     #[test]
     fn a_conflicted_link_can_be_removed_and_is_reported() {
         let g = Graph::new();
-        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "depends_on": ["$0"] }])).unwrap();
+        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }])).unwrap();
         let snap = g.snapshot();
         let (a, b) = (snap.nodes.values().find(|n| n.title == "a").unwrap().id, snap.nodes.values().find(|n| n.title == "b").unwrap().id);
         // A second client's link a -> b arrives and is set aside.
-        g.create_edge(a, b, waypoint_model::EdgeTypeId::DEPENDS_ON);
+        g.create_edge(a, b, waypoint_model::EdgeTypeId::DEFAULT);
         g.apply_writes(&crate::repair::plan(&g.snapshot()));
         let reported = crate::api::conflicts(&g.snapshot());
         assert_eq!(reported["conflicts"].as_array().unwrap().len(), 1);
@@ -781,7 +796,7 @@ mod tests {
     #[test]
     fn dot_lists_nodes_and_links() {
         let g = Graph::new();
-        run(&g, json!([{ "op": "create_node", "title": "say \"hi\"" }, { "op": "create_node", "title": "b", "depends_on": ["$0"] }])).unwrap();
+        run(&g, json!([{ "op": "create_node", "title": "say \"hi\"" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }])).unwrap();
         let dot = crate::api::dot(&g.snapshot());
         assert!(dot.starts_with("digraph waypoint {"));
         assert!(dot.contains("label=\"#1 say \\\"hi\\\"\""), "{dot}");
@@ -841,9 +856,9 @@ mod tests {
         let snap = g.snapshot();
         let e = snap.edge_type(snap.edges[0].type_id);
         assert_eq!((e.name.as_str(), e.width, e.start.as_str(), e.end.as_str()), ("blocks", 1, "dot", "bar"));
-        let r = run(&g, json!([{ "op": "link", "from": "#1", "to": "#2", "edge_type": "depends_on" }])).unwrap();
+        let r = run(&g, json!([{ "op": "link", "from": "#1", "to": "#2", "edge_type": "link" }])).unwrap();
         assert_eq!(r[0]["already_linked"], true);
-        assert_eq!(g.snapshot().edge_type(g.snapshot().edges[0].type_id).name, "depends_on");
+        assert_eq!(g.snapshot().edge_type(g.snapshot().edges[0].type_id).name, "link");
         assert!(run(&g, json!([{ "op": "link", "from": "#1", "to": "#2", "edge_type": "nope" }])).unwrap_err().message.contains("no edge type"));
     }
 
@@ -855,7 +870,7 @@ mod tests {
             id: style::DEFAULT_EDGE_TYPE,
             fields: vec![("color".into(), json!("#ffffff"))],
         }]);
-        assert_eq!(g.snapshot().edge_types[0].label, "depends on");
+        assert_eq!(g.snapshot().edge_types[0].label, "link");
     }
 
     #[test]
@@ -879,9 +894,9 @@ mod tests {
         let snap = g.snapshot();
         assert_eq!(snap.edge_types.iter().find(|t| t.name == "quiet").unwrap().label, "");
         // And the default type can be silenced without losing its other settings.
-        run(&g, json!([{ "op": "upsert_edge_type", "name": "depends_on", "label": "" }])).unwrap();
+        run(&g, json!([{ "op": "upsert_edge_type", "name": "link", "label": "" }])).unwrap();
         let snap = g.snapshot();
-        let d = snap.edge_types.iter().find(|t| t.name == "depends_on").unwrap();
+        let d = snap.edge_types.iter().find(|t| t.name == "link").unwrap();
         assert_eq!((d.label.as_str(), d.width), ("", 2));
     }
 }

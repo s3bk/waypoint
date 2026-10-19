@@ -2,7 +2,7 @@
 //! the document directly, so two of them can each make a change that is fine
 //! alone and invalid once merged. After each merge the server looks for:
 //!
-//! - **dependency cycles**: the newest edge in each is flagged `conflicted`
+//! - **cycles**: the newest edge in each is flagged `conflicted`
 //!   (kept, visible, but out of `Snapshot::edges`), so nothing is dropped;
 //! - **anchor cycles**: one member is moved to the scope origin;
 //! - **invalid anchors**: a node anchored to something that is no longer its
@@ -30,7 +30,7 @@ pub fn plan(snap: &Snapshot) -> Vec<Write> {
         writes.push(Write::Unlink { from, to });
     }
 
-    // Dependency cycles.
+    // Cycles.
     let mut edges: Vec<(NodeId, NodeId)> = snap.edges.iter().map(|e| (e.from, e.to)).collect();
     while let Some(cycle) = find_cycle(&edges) {
         // Ids are time-ordered, so the edge touching the newest node is the
@@ -210,8 +210,8 @@ mod tests {
         let (alice, bob) = (Graph::new(), Graph::new());
         sync(&base, &alice);
         sync(&base, &bob);
-        alice.create_edge(a, b, EdgeTypeId::DEPENDS_ON); // a depends on b
-        bob.create_edge(b, a, EdgeTypeId::DEPENDS_ON); // b depends on a
+        alice.create_edge(a, b, EdgeTypeId::DEFAULT); // a -> b
+        bob.create_edge(b, a, EdgeTypeId::DEFAULT); // b -> a
         let server = Graph::new();
         for g in [&base, &alice, &bob] {
             sync(g, &server);
@@ -237,10 +237,10 @@ mod tests {
         let g = Graph::new();
         let ids: Vec<_> = (0..4).map(|i| node(&g, "n", Place::at_origin(Vec2::new(i * 300, 0)))).collect();
         for w in 0..4 {
-            g.create_edge(ids[w], ids[(w + 1) % 4], EdgeTypeId::DEPENDS_ON); // 0 > 1 > 2 > 3 > 0
+            g.create_edge(ids[w], ids[(w + 1) % 4], EdgeTypeId::DEFAULT); // 0 > 1 > 2 > 3 > 0
         }
         let extra = node(&g, "x", Place::at_origin(Vec2::new(0, 300)));
-        g.create_edge(extra, ids[0], EdgeTypeId::DEPENDS_ON);
+        g.create_edge(extra, ids[0], EdgeTypeId::DEFAULT);
         repair(&g);
         let snap = g.snapshot();
         assert_eq!((snap.edges.len(), snap.conflicted.len()), (4, 1));
@@ -251,7 +251,7 @@ mod tests {
     fn a_self_link_is_set_aside() {
         let g = Graph::new();
         let a = node(&g, "a", Place::at_origin(Vec2::ZERO));
-        g.create_edge(a, a, EdgeTypeId::DEPENDS_ON);
+        g.create_edge(a, a, EdgeTypeId::DEFAULT);
         repair(&g);
         assert_eq!((g.snapshot().edges.len(), g.snapshot().conflicted.len()), (0, 1));
     }
@@ -262,9 +262,9 @@ mod tests {
         let a = node(&base, "a", Place::at_origin(Vec2::new(100, 100)));
         let b = node(&base, "b", Place { anchor: Some(a), off: Vec2::new(200, 0) });
         let c = node(&base, "c", Place { anchor: Some(b), off: Vec2::new(200, 0) });
-        base.create_edge(b, a, EdgeTypeId::DEPENDS_ON);
-        base.create_edge(c, b, EdgeTypeId::DEPENDS_ON);
-        base.create_edge(a, c, EdgeTypeId::DEPENDS_ON); // closes a dependency cycle too
+        base.create_edge(b, a, EdgeTypeId::DEFAULT);
+        base.create_edge(c, b, EdgeTypeId::DEFAULT);
+        base.create_edge(a, c, EdgeTypeId::DEFAULT); // closes a cycle too
         let (alice, bob) = (Graph::new(), Graph::new());
         sync(&base, &alice);
         sync(&base, &bob);
@@ -297,14 +297,14 @@ mod tests {
         let a = node(&base, "a", Place::at_origin(Vec2::new(0, 0)));
         let b = node(&base, "b", Place { anchor: Some(a), off: Vec2::new(200, 0) });
         let c = node(&base, "c", Place { anchor: Some(b), off: Vec2::new(200, 0) });
-        base.create_edge(b, a, EdgeTypeId::DEPENDS_ON);
-        base.create_edge(c, b, EdgeTypeId::DEPENDS_ON);
+        base.create_edge(b, a, EdgeTypeId::DEFAULT);
+        base.create_edge(c, b, EdgeTypeId::DEFAULT);
         let (alice, bob) = (Graph::new(), Graph::new());
         sync(&base, &alice);
         sync(&base, &bob);
         // Alice removes the link that anchors c; Bob adds a link c to a.
         alice.apply_writes(&[Write::Unlink { from: c, to: b }]);
-        bob.create_edge(c, a, EdgeTypeId::DEPENDS_ON);
+        bob.create_edge(c, a, EdgeTypeId::DEFAULT);
         let server = Graph::new();
         for g in [&base, &alice, &bob] {
             sync(g, &server);
@@ -342,7 +342,7 @@ mod tests {
         bob.apply_update(&alice.encode_state()).unwrap();
         // Alice deletes b while bob links a to it.
         alice.apply_writes(&[Write::DeleteNode { id: b }]);
-        bob.create_edge(a, b, EdgeTypeId::DEPENDS_ON);
+        bob.create_edge(a, b, EdgeTypeId::DEFAULT);
         alice.apply_update(&bob.encode_state()).unwrap();
         assert_eq!(alice.snapshot().dangling, vec![(a, b)]);
         alice.apply_writes(&plan(&alice.snapshot()));

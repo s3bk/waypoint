@@ -18,7 +18,7 @@ use crate::{derive_positions, move_group, move_node};
 
 /// Free space kept between neighbouring nodes.
 pub const MARGIN: i32 = 24;
-/// Gap between a node and a dependant added next to it.
+/// Gap between a node and a source added next to it.
 pub const FLOW_GAP: i32 = 80;
 /// A pass stops once this many places have been written; leftover overlap is
 /// left for an explicit tidy.
@@ -173,7 +173,7 @@ fn edge_nudge(
     None
 }
 
-/// Move `id` (with what it depends on, or alone) off any edge it lies on. `moved`
+/// Move `id` (with what it links to, or alone) off any edge it lies on. `moved`
 /// is the group that moves rigidly with it. Returns the updated places.
 fn nudge_off_edges(
     mut cur: BTreeMap<NodeId, Place>,
@@ -268,7 +268,7 @@ pub fn repair_overlaps(places: &BTreeMap<NodeId, Place>) -> Vec<(NodeId, Place)>
 }
 
 /// Add node `id` and make room for it. With a `parent`, the node goes next to
-/// it in the flow direction (to its right, as a dependant); otherwise at `at`.
+/// it in the flow direction (to its right, as a source); otherwise at `at`.
 /// A node that would land on an unrelated edge is moved off it. `edges` are the
 /// live edges as `(from, to)`. Returns the new node's place and the places of
 /// everything pushed.
@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_a_dependant_places_it_to_the_right_and_pushes_the_occupant() {
+    fn adding_a_source_places_it_to_the_right_and_pushes_the_occupant() {
         let mut p = BTreeMap::new();
         let parent = at(&mut p, 0, 0);
         let occupant = at(&mut p, NODE_WIDTH + FLOW_GAP, 0); // exactly where the new node goes
@@ -496,7 +496,7 @@ mod tests {
         let follower = NodeId::new();
         p.insert(follower, Place { anchor: Some(head), off: v(STEP, 0) });
         let bystander = at(&mut p, 1000, STEP);
-        // Drag the pair (head depends on follower) so the follower lands on the bystander.
+        // Drag the pair (head links to follower) so the follower lands on the bystander.
         let out = apply(&p, drop_node(&p, &[(head, follower)], head, v(1000 - STEP, STEP), true));
         let pos = derive_positions(&out);
         assert_eq!(pos[&follower], v(1000, STEP), "the sub-graph keeps its shape");
@@ -590,7 +590,7 @@ mod tests {
     fn a_new_node_placed_on_an_edge_is_moved_off_it() {
         let mut p = BTreeMap::new();
         let parent = at(&mut p, 0, 0);
-        // A vertical edge right where the new dependant would go (x = 240).
+        // A vertical edge right where the new source would go (x = 240).
         let top = at(&mut p, 240, -500);
         let bottom = at(&mut p, 240, 500);
         let new = NodeId::new();

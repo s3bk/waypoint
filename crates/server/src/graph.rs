@@ -59,7 +59,7 @@ pub struct NodeRec {
     pub type_id: Option<Uuid>,
 }
 
-/// A live edge: `from` depends on `to`.
+/// A live edge: `from` links to `to`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EdgeRec {
     pub from: NodeId,
@@ -74,7 +74,7 @@ pub struct Snapshot {
     pub nodes: BTreeMap<NodeId, NodeRec>,
     /// One per ordered pair, both ends live.
     pub edges: Vec<EdgeRec>,
-    /// Edges the server set aside because they closed a dependency cycle. They
+    /// Edges the server set aside because they closed a cycle. They
     /// are not part of `edges`, so planning never sees them.
     pub conflicted: Vec<EdgeRec>,
     /// Edge entries still marked live whose end is a deleted or unknown node, e.g. a link one
@@ -625,7 +625,7 @@ impl Graph {
                 let type_id = any_str(f.get("type"))
                     .and_then(|t| t.parse::<Uuid>().ok())
                     .map(EdgeTypeId)
-                    .unwrap_or(EdgeTypeId::DEPENDS_ON);
+                    .unwrap_or(EdgeTypeId::DEFAULT);
                 let rec = EdgeRec { from, to, type_id };
                 if any_bool(f.get("conflicted")) {
                     flagged.entry((from, to)).or_insert(rec);
@@ -706,8 +706,8 @@ impl Graph {
         self.create_node(a, "design", Place::at_origin(Vec2::new(0, 0)));
         self.create_node(b, "build", Place { anchor: Some(a), off: Vec2::new(240, -40) });
         self.create_node(c, "ship", Place { anchor: Some(b), off: Vec2::new(240, 80) });
-        self.create_edge(b, a, EdgeTypeId::DEPENDS_ON);
-        self.create_edge(c, b, EdgeTypeId::DEPENDS_ON);
+        self.create_edge(b, a, EdgeTypeId::DEFAULT);
+        self.create_edge(c, b, EdgeTypeId::DEFAULT);
     }
 
     pub fn doc(&self) -> &Doc {
@@ -822,14 +822,14 @@ mod tests {
         let (a, b) = (NodeId::new(), NodeId::new());
         g.create_node(a, "a", Place::at_origin(Vec2::ZERO));
         g.create_node(b, "b", Place::at_origin(Vec2::ZERO));
-        g.create_edge(a, b, EdgeTypeId::DEPENDS_ON);
-        g.create_edge(a, b, EdgeTypeId::DEPENDS_ON); // repeating is a no-op
+        g.create_edge(a, b, EdgeTypeId::DEFAULT);
+        g.create_edge(a, b, EdgeTypeId::DEFAULT); // repeating is a no-op
         assert_eq!(g.snapshot().edges.len(), 1);
-        g.create_edge(b, a, EdgeTypeId::DEPENDS_ON); // the other direction is a different edge
+        g.create_edge(b, a, EdgeTypeId::DEFAULT); // the other direction is a different edge
         assert_eq!(g.snapshot().edges.len(), 2);
         g.apply_writes(&[Write::Unlink { from: a, to: b }]);
-        assert_eq!(g.snapshot().edges, vec![EdgeRec { from: b, to: a, type_id: EdgeTypeId::DEPENDS_ON }]);
-        g.create_edge(a, b, EdgeTypeId::DEPENDS_ON); // and it can come back
+        assert_eq!(g.snapshot().edges, vec![EdgeRec { from: b, to: a, type_id: EdgeTypeId::DEFAULT }]);
+        g.create_edge(a, b, EdgeTypeId::DEFAULT); // and it can come back
         assert_eq!(g.snapshot().edges.len(), 2);
     }
 
@@ -844,17 +844,17 @@ mod tests {
             let mut txn = g.doc.transact_mut();
             g.edges.insert(
                 &mut txn,
-                format!("{}>{}:{}", a.0, b.0, EdgeTypeId::DEPENDS_ON.0),
+                format!("{}>{}:{}", a.0, b.0, EdgeTypeId::DEFAULT.0),
                 MapPrelim::from([
                     ("from".to_string(), Any::from(a.0.to_string())),
                     ("to".to_string(), Any::from(b.0.to_string())),
-                    ("type".to_string(), Any::from(EdgeTypeId::DEPENDS_ON.0.to_string())),
+                    ("type".to_string(), Any::from(EdgeTypeId::DEFAULT.0.to_string())),
                     ("deleted".to_string(), Any::from(false)),
                 ]),
             );
         }
         assert_eq!(g.snapshot().edges.len(), 1);
-        g.create_edge(a, b, EdgeTypeId::DEPENDS_ON); // new spelling for the same pair
+        g.create_edge(a, b, EdgeTypeId::DEFAULT); // new spelling for the same pair
         assert_eq!(g.snapshot().edges.len(), 1, "one edge, not two");
         g.apply_writes(&[Write::Unlink { from: a, to: b }]);
         assert!(g.snapshot().edges.is_empty(), "removing it removes both entries");
@@ -866,7 +866,7 @@ mod tests {
         let (a, b) = (NodeId::new(), NodeId::new());
         g.create_node(a, "a", Place::at_origin(Vec2::ZERO));
         g.create_node(b, "b", Place::at_origin(Vec2::ZERO));
-        g.create_edge(a, b, EdgeTypeId::DEPENDS_ON);
+        g.create_edge(a, b, EdgeTypeId::DEFAULT);
         g.apply_writes(&[Write::DeleteNode { id: b }]);
         let snap = g.snapshot();
         assert_eq!(snap.nodes.len(), 1);

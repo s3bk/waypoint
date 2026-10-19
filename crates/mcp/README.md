@@ -1,7 +1,7 @@
 # waypoint-mcp
 
 An [MCP](https://modelcontextprotocol.io) server (stdio) that lets AI agents read and edit a
-[Waypoint](https://github.com/s3bk/waypoint) dependency graph. It forwards tool calls to a running
+[Waypoint](https://github.com/s3bk/waypoint) graph. It forwards tool calls to a running
 Waypoint server over HTTP, so people with the web UI open see the agent's edits live.
 
 ```sh

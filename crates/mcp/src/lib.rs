@@ -6,7 +6,7 @@
 //! Nodes are named by *reference*: a short key like `"#12"` (assigned by the
 //! server, stable across renames), an id, or `"$0"` for a node created earlier
 //! in the same batch. Links are identified by the ordered pair of their ends:
-//! "from depends on to".
+//! "from links to" to.
 
 use serde_json::{Value, json};
 
@@ -44,12 +44,12 @@ pub struct Config {
 }
 
 const INSTRUCTIONS: &str = "\
-Waypoint holds a graph of project work items (nodes) joined by dependency links.\n\
-A link `from -> to` means \"from depends on to\": `to` must be done first.\n\
+Waypoint holds a graph of project work items (nodes) joined by links.\n\
+A link `from -> to` goes from a source node (`from`) to a destination node (`to`).\n\
 Name nodes by their short key, like \"#12\" (shown as `key`/`ref` in every result; it never changes, even \
 if the node is renamed). Start with search_nodes or get_graph to find keys, then use get_node / get_neighbours \
 to explore. Changes appear live for everyone viewing the graph. Layout is automatic: new nodes are placed \
-beside what they depend on and neighbours make room, so you rarely need move_node. A batch (apply_batch) is \
+beside their destinations and neighbours make room, so you rarely need move_node. A batch (apply_batch) is \
 atomic: if any op fails, none is applied. Deleting a node joins the links through it.";
 
 fn node_ref_schema(description: &str) -> Value {
@@ -80,7 +80,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "get_full_graph",
-            "description": "The whole graph as JSON: every node (key, title, note, position), every link (`from` depends on `to`) and the set-aside conflicts.",
+            "description": "The whole graph as JSON: every node (key, title, note, position), every link (a link from source `from` to destination `to`) and the set-aside conflicts.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -93,35 +93,35 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "get_node",
-            "description": "One node with its position and its direct links: `depends_on` (what it needs first) and `dependants` (what needs it).",
+            "description": "One node with its position and its direct links: `destinations` (the nodes it links to) and `sources` (the nodes that link to it).",
             "inputSchema": { "type": "object", "required": ["node"], "properties": { "node": node(node_help) } }
         }),
         json!({
             "name": "get_neighbours",
-            "description": "The part of the graph around a node, up to `depth` links away (default 1, max 5, at most 200 nodes). Links are listed as {from, to}, meaning \"from depends on to\".",
+            "description": "The part of the graph around a node, up to `depth` links away (default 1, max 5, at most 200 nodes). Links are listed as {from, to}, from source to destination.",
             "inputSchema": { "type": "object", "required": ["node"], "properties": {
                 "node": node(node_help),
-                "direction": { "type": "string", "enum": ["dependencies", "dependants", "both"], "description": "dependencies = what it depends on (transitively); dependants = what depends on it. Default both." },
+                "direction": { "type": "string", "enum": ["destinations", "sources", "both"], "description": "destinations = what it links to (transitively); sources = what links to it. Default both. (The old names dependencies and dependants still work.)" },
                 "depth": { "type": "integer", "minimum": 1, "maximum": 5 }
             } }
         }),
         json!({
             "name": "get_dot",
-            "description": "The whole graph as Graphviz DOT text: one line per node (with its key) and one arrow per link. An arrow A -> B means \"A depends on B\". The quickest way to see everything at once on a small graph.",
+            "description": "The whole graph as Graphviz DOT text: one line per node (with its key) and one arrow per link. An arrow A -> B is a link from source A to destination B. The quickest way to see everything at once on a small graph.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
             "name": "get_conflicts",
-            "description": "Links the server set aside because two people's changes, made at the same time, together closed a dependency cycle. They are hidden from every other result. Each is {from, to}, meaning \"from depends on to\". Resolve one with unlink_nodes (remove it) after deciding which dependency is wrong.",
+            "description": "Links the server set aside because two people's changes, made at the same time, together closed a cycle. They are hidden from every other result. Each is {from, to}, from source to destination. Resolve one with unlink_nodes (remove it) after deciding which link is wrong.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
             "name": "create_node",
-            "description": "Add a node. It is placed next to the first node it depends on (or before the first of its dependants, or below everything), and neighbours make room. Returns its new key.",
+            "description": "Add a node. It is placed next to its first destination (or before its first source, or below everything), and neighbours make room. Returns its new key.",
             "inputSchema": { "type": "object", "required": ["title"], "properties": {
                 "title": { "type": "string", "description": "Short title, at most 200 characters." },
-                "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Nodes the new node depends on (node references)." },
-                "dependants": { "type": "array", "items": { "type": "string" }, "description": "Existing nodes that should depend on the new node (node references)." },
+                "destinations": { "type": "array", "items": { "type": "string" }, "description": "Nodes the new node links to (node references); alias depends_on." },
+                "sources": { "type": "array", "items": { "type": "string" }, "description": "Existing nodes that should link to the new node (node references); alias dependants." },
                 "node_type": { "type": "string", "description": "Name of a node type (see get_types). Default: the default type." }
             } }
         }),
@@ -132,20 +132,20 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "delete_node",
-            "description": "Delete a node. Chains through it are joined: deleting B from \"C depends on B depends on A\" leaves \"C depends on A\". Its key is never reused.",
+            "description": "Delete a node. Chains through it are joined: deleting B from \"C -> B -> A\" leaves \"C -> A\". Its key is never reused.",
             "inputSchema": { "type": "object", "required": ["node"], "properties": { "node": node(node_help) } }
         }),
         json!({
             "name": "link_nodes",
-            "description": "Make `from` depend on `to` (`to` must be done first). Refused if it would create a dependency cycle or if from == to. Linking twice is harmless; linking an existing link with another `edge_type` changes its type.",
+            "description": "Link `from` (the source) to `to` (the destination). Refused if it would create a cycle or if from == to. Linking twice is harmless; linking an existing link with another `edge_type` changes its type.",
             "inputSchema": { "type": "object", "required": ["from", "to"], "properties": {
                 "from": node(node_help), "to": node(node_help),
-                "edge_type": { "type": "string", "description": "Name of an edge type (see get_types). Default: depends_on." }
+                "edge_type": { "type": "string", "description": "Name of an edge type (see get_types). Default: link (the old name depends_on still works)." }
             } }
         }),
         json!({
             "name": "unlink_nodes",
-            "description": "Remove the link saying `from` depends on `to`. Nodes keep their positions.",
+            "description": "Remove the link from `from` to `to`. Nodes keep their positions.",
             "inputSchema": { "type": "object", "required": ["from", "to"], "properties": { "from": node(node_help), "to": node(node_help) } }
         }),
         json!({
@@ -155,7 +155,7 @@ fn tool_list() -> Vec<Value> {
                 "node": node(node_help),
                 "x": { "type": "integer" },
                 "y": { "type": "integer" },
-                "with_dependencies": { "type": "boolean", "description": "Also move the nodes it depends on, and what they depend on (default false: just this node)." }
+                "with_destinations": { "type": "boolean", "description": "Also move the nodes it links to, and what they link to (default false: just this node)." }
             } }
         }),
         json!({
@@ -192,7 +192,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "upsert_edge_type",
-            "description": "Create an edge type, or change the one with this `name`; only the fields you give change. Colours are #rrggbb and are drawn on the canvas background (see get_types): `color` (the line) needs a contrast of at least 3:1 and `text_color` (the label) at least 4.5:1. `width` is clamped to 1-10. `start` is the end at the dependant, `end` at the dependency.",
+            "description": "Create an edge type, or change the one with this `name`; only the fields you give change. Colours are #rrggbb and are drawn on the canvas background (see get_types): `color` (the line) needs a contrast of at least 3:1 and `text_color` (the label) at least 4.5:1. `width` is clamped to 1-10. `start` is the end at the source, `end` at the destination.",
             "inputSchema": { "type": "object", "required": ["name"], "properties": {
                 "name": { "type": "string" }, "new_name": { "type": "string" }, "label": { "type": "string" },
                 "color": { "type": "string" }, "text_color": { "type": "string" },
@@ -224,7 +224,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "apply_batch",
-            "description": "Apply several operations atomically (all or none), at most 100. Each op is an object with an `op` field: create_node {title, depends_on?, dependants?}, rename_node {node, title}, delete_node {node}, link {from, to}, unlink {from, to}, move_node {node, x, y, with_dependencies?}, set_note {node, body}, append_note {node, text}. A node created earlier in the batch can be referenced as \"$N\" where N is the index of its create_node op.",
+            "description": "Apply several operations atomically (all or none), at most 100. Each op is an object with an `op` field: create_node {title, destinations?, sources?}, rename_node {node, title}, delete_node {node}, link {from, to}, unlink {from, to}, move_node {node, x, y, with_destinations?}, set_note {node, body}, append_note {node, text}. A node created earlier in the batch can be referenced as \"$N\" where N is the index of its create_node op.",
             "inputSchema": { "type": "object", "required": ["ops"], "properties": {
                 "ops": { "type": "array", "items": { "type": "object", "required": ["op"], "properties": { "op": { "type": "string", "enum": ["create_node", "rename_node", "delete_node", "link", "unlink", "move_node", "set_node_type", "upsert_node_type", "upsert_edge_type", "remove_node_type", "remove_edge_type", "set_note", "append_note"] } } } },
                 "label": { "type": "string", "description": "Optional note on what this batch is for." }
@@ -291,8 +291,8 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
         "create_node" => one(json!({
             "op": "create_node",
             "title": str_arg(args, "title")?,
-            "depends_on": args.get("depends_on").cloned().unwrap_or(json!([])),
-            "dependants": args.get("dependants").cloned().unwrap_or(json!([])),
+            "destinations": args.get("destinations").or(args.get("depends_on")).cloned().unwrap_or(json!([])),
+            "sources": args.get("sources").or(args.get("dependants")).cloned().unwrap_or(json!([])),
             "node_type": args.get("node_type"),
         }))
         .map(|r| r["results"][0].clone()),
@@ -308,7 +308,7 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
             "node": node(args, "node")?,
             "x": args.get("x").and_then(Value::as_i64).ok_or("missing integer argument `x`")?,
             "y": args.get("y").and_then(Value::as_i64).ok_or("missing integer argument `y`")?,
-            "with_dependencies": args.get("with_dependencies").or(args.get("with_subtree")).and_then(Value::as_bool).unwrap_or(false),
+            "with_destinations": args.get("with_destinations").or(args.get("with_dependencies")).or(args.get("with_subtree")).and_then(Value::as_bool).unwrap_or(false),
         }))
         .map(|r| r["results"][0].clone()),
         "undo" | "redo" => backend.post(&format!("{base}/{name}"), &json!({})),
@@ -431,7 +431,7 @@ mod tests {
         let r = &ask("2025-06-18")["result"];
         assert_eq!(r["serverInfo"]["name"], "waypoint");
         assert!(r["capabilities"]["tools"].is_object());
-        assert!(r["instructions"].as_str().unwrap().contains("depends on"));
+        assert!(r["instructions"].as_str().unwrap().contains("destination"));
     }
 
     #[test]
@@ -489,34 +489,34 @@ mod tests {
     }
 
     #[test]
-    fn create_node_sends_dependencies_and_defaults_the_rest() {
+    fn create_node_sends_destinations_and_defaults_the_rest() {
         let fake = Fake::default();
-        call(&fake, "create_node", json!({ "title": "Write docs", "depends_on": ["#2"] }));
+        call(&fake, "create_node", json!({ "title": "Write docs", "destinations": ["#2"] }));
         let c = fake.calls.borrow()[0].clone();
         assert!(c.starts_with("POST /api/graphs/demo/apply "), "{c}");
-        assert!(c.contains(r##""depends_on":["#2"]"##) && c.contains(r#""dependants":[]"#) && c.contains("Write docs"), "{c}");
+        assert!(c.contains(r##""destinations":["#2"]"##) && c.contains(r#""sources":[]"#) && c.contains("Write docs"), "{c}");
     }
 
     #[test]
     fn reads_build_the_right_urls() {
         let fake = Fake::default();
         call(&fake, "search_nodes", json!({ "query": "write docs", "limit": 5 }));
-        call(&fake, "get_neighbours", json!({ "node": "#1", "direction": "dependants", "depth": 3 }));
+        call(&fake, "get_neighbours", json!({ "node": "#1", "direction": "sources", "depth": 3 }));
         call(&fake, "get_graph", json!({}));
         call(&fake, "get_conflicts", json!({}));
         let calls = fake.calls.borrow();
         assert_eq!(calls[0], "GET /api/graphs/demo/nodes?limit=5&q=write%20docs");
-        assert_eq!(calls[1], "GET /api/graphs/demo/nodes/%231/neighbours?direction=dependants&depth=3");
+        assert_eq!(calls[1], "GET /api/graphs/demo/nodes/%231/neighbours?direction=sources&depth=3");
         assert_eq!(calls[2], "GET /api/graphs/demo");
         assert_eq!(calls[3], "GET /api/graphs/demo/conflicts");
     }
 
     #[test]
     fn failures_are_results_the_model_can_read_not_protocol_errors() {
-        let fake = Fake { fail_with: Some("link would create a dependency cycle".into()), ..Fake::default() };
+        let fake = Fake { fail_with: Some("link would create a cycle".into()), ..Fake::default() };
         let r = call(&fake, "link_nodes", json!({ "from": "#1", "to": "#2" }));
         assert_eq!(r["isError"], true);
-        assert_eq!(r["content"][0]["text"], "link would create a dependency cycle");
+        assert_eq!(r["content"][0]["text"], "link would create a cycle");
 
         let none = Fake::default();
         assert_eq!(call(&none, "link_nodes", json!({ "from": "#1" }))["isError"], true, "missing argument");

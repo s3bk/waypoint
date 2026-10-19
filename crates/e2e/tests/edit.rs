@@ -19,15 +19,15 @@ async fn editing_in_the_browser_reaches_the_server() {
     until("alpha in the client", || async { page.id_titled("alpha").await.is_some() }).await;
     let alpha = page.id_titled("alpha").await.expect("alpha in the client");
 
-    // Ctrl+Enter adds a dependant that depends on the selected node.
+    // Ctrl+Enter adds a source linking to the selected node.
     page.press_ctrl(Key::Enter).await;
     page.type_title("beta").await;
     until("beta linked to alpha", || async {
-        stack.call(&keys, &keys.viewer, "GET", "/nodes/%232", None).1["depends_on"].as_array().is_some_and(|d| d.len() == 1)
+        stack.call(&keys, &keys.viewer, "GET", "/nodes/%232", None).1["destinations"].as_array().is_some_and(|d| d.len() == 1)
     })
     .await;
     let beta = stack.call(&keys, &keys.viewer, "GET", "/nodes/%232", None).1;
-    assert_eq!(beta["depends_on"][0]["title"], "alpha");
+    assert_eq!(beta["destinations"][0]["title"], "alpha");
 
     // Rename by double-clicking; the box opens with the title selected.
     let (cx, cy) = page.rect(&alpha).await.center();
@@ -58,7 +58,7 @@ async fn editing_in_the_browser_reaches_the_server() {
     })
     .await;
 
-    // Link two nodes by dragging from a side dot: delta depends on gamma.
+    // Link two nodes by dragging from a side dot: delta links to gamma.
     page.dblclick(640, 640).await;
     page.type_title("delta").await;
     until("delta in the client", || async { page.id_titled("delta").await.is_some() }).await;
@@ -67,10 +67,10 @@ async fn editing_in_the_browser_reaches_the_server() {
     let target = page.rect(&alpha).await.center();
     page.drag((d.x, d.y + d.h / 2), target).await;
     until("delta linked", || async {
-        stack.call(&keys, &keys.viewer, "GET", "/nodes/%233", None).1["depends_on"].as_array().is_some_and(|d| d.len() == 1)
+        stack.call(&keys, &keys.viewer, "GET", "/nodes/%233", None).1["destinations"].as_array().is_some_and(|d| d.len() == 1)
     })
     .await;
-    assert_eq!(stack.call(&keys, &keys.viewer, "GET", "/nodes/%233", None).1["depends_on"][0]["title"], "gamma");
+    assert_eq!(stack.call(&keys, &keys.viewer, "GET", "/nodes/%233", None).1["destinations"][0]["title"], "gamma");
 
     // Select a node and delete it: the others stay.
     let (cx, cy) = page.rect(&alpha).await.center();

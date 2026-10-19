@@ -1,0 +1,11 @@
+- text align of the nodes to center
+- intelligent line breaking. find the most semaically matching place to split the line., respect manual line breaks
+- the bottom instruction overlay should disappear if the user is not doing something for 5s.
+- export to SVG (crop to actual scene size) and PNG
+- text overflows ellipse and rombus 
+- on firefox zoom events buffer into a long queue that than executes and zoom way past what was intended
+- types editor: button "Set canvas color" should be aliged on the right with all the other buttons
+- use 🗈 or 🗒  as note icon (outside the text area)
+- creating a new link and then deleting it, deletes the wrong link
+- creating a new edge should show the list of edge types to pick from
+- sharp edges for the rhombus

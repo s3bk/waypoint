@@ -1,6 +1,6 @@
 # Waypoint
 
-> A shared dependency graph of nodes ("A depends on B"). Humans edit it in the web UI; agents use the HTTP API below. Machine-readable spec: /openapi.json
+> A shared graph of nodes joined by links from a source to a destination. Humans edit it in the web UI; agents use the HTTP API below. Machine-readable spec: /openapi.json
 
 ## Auth
 
@@ -22,7 +22,7 @@ A new key set: `curl -X POST https://waypoint.qdat.net/api/graphs`. A graph exis
 - GET /api/graphs/{graph}                          summary: title, node/link/conflict counts
 - GET /api/graphs/{graph}/nodes?q=text&limit=50    search by title or key ("#12")
 - GET /api/graphs/{graph}/nodes/{node}             one node with its links and note
-- GET /api/graphs/{graph}/nodes/{node}/neighbours?direction=both|dependencies|dependants&depth=1
+- GET /api/graphs/{graph}/nodes/{node}/neighbours?direction=both|destinations|sources&depth=1
 - GET /api/graphs/{graph}/conflicts                links set aside because they would close a cycle
 - GET /api/graphs/{graph}/types                    node types, edge types, background colour
 - GET /api/graphs/{graph}/full                     whole graph as JSON: nodes (with note, position), links, conflicts
@@ -37,20 +37,20 @@ A node reference is its key (`#12` or `12`), its UUID, or `$N` for the node crea
 POST /api/graphs/{graph}/apply takes a batch of ops, applied atomically (any failure changes nothing and the error names `op_index`). Optional headers: `X-Waypoint-Peer: id` is your id for this session (any string you keep; it keys your undo history; use a random one) and `X-Waypoint-Actor: name` is what you call yourself in the change log. Names may repeat and prove nothing; peers are told apart by id. Without an id you are known by your name.
 
     curl -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-      -d '{"label":"add task","ops":[{"op":"create_node","title":"Write tests","depends_on":["#3"]}]}' \
+      -d '{"label":"add task","ops":[{"op":"create_node","title":"Write tests","destinations":["#3"]}]}' \
       https://waypoint.qdat.net/api/graphs/$GRAPH/apply
     # {"results":[{...,"key":13}]}
 
 Ops (field `op`):
-- create_node {title, depends_on?: [ref], dependants?: [ref], x?, y?, node_type?: name}
+- create_node {title, destinations?: [ref], sources?: [ref], x?, y?, node_type?: name}
                                   A batch with 3 or more create_node ops that give no x/y is laid out as a
-                                  whole (layers left to right by dependency, few crossings), below anything
+                                  whole (layers left to right, destinations first, few crossings), below anything
                                   already in the graph. You do not need to pass positions to build a graph.
 - rename_node {node, title}
 - delete_node {node}              links through it are joined
-- link {from, to, edge_type?: name}  from depends on to; refused if it closes a cycle; relinking retypes
+- link {from, to, edge_type?: name}  from (source) links to to (destination); refused if it closes a cycle; relinking retypes
 - unlink {from, to}
-- move_node {node, x, y, with_dependencies?}   with_dependencies also moves what it depends on
+- move_node {node, x, y, with_destinations?}   with_destinations also moves what it links to
 - set_node_type {node, node_type}       "default" restores the default
 - upsert_node_type {name, new_name?, shape?, bg?, fg?, border?, border_width?, corners?}
 - upsert_edge_type {name, new_name?, label?, color?, text_color?, width?, line_style?, start?, end?}
@@ -60,9 +60,9 @@ Ops (field `op`):
 
 ## Types and colours
 
-Nodes and edges have a type (a name; the default node type is `default`, the default edge type `depends_on`). `get_types`/`GET /types` lists them with styles. Only the fields you give change. Colours are `#rrggbb`.
+Nodes and edges have a type (a name; the default node type is `default`, the default edge type `link`; the old name `depends_on` still works). `get_types`/`GET /types` lists them with styles. Only the fields you give change. Colours are `#rrggbb`.
 - Node type: shape (rect, pill, ellipse, hexagon, rhombus), corners (round, square; for rect, hexagon and rhombus), bg + fg (fill and title; give both; contrast >= 4.5:1), border, border_width (0-10); borders are solid.
-- Edge type: color (the line; contrast >= 3:1 with the graph background), text_color (the label; >= 4.5:1), width (1-10), line_style, start and end (none, arrow, dot, bar; `end` is at the dependency).
+- Edge type: color (the line; contrast >= 3:1 with the graph background), text_color (the label; >= 4.5:1), width (1-10), line_style, start and end (none, arrow, dot, bar; `end` is at the destination).
 - Out-of-range widths are clamped; bad colours, pairs or shapes fail the op (422) and say why.
 - PUT /api/graphs/{graph}/background {color}   owner key only; edge types that would stop being readable on it are recoloured black or white and listed in the reply.
 

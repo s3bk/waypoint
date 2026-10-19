@@ -74,14 +74,14 @@ interface Drag {
   /** Where the node should end up, absolute in the scope. */
   x: number;
   y: number;
-  /** Take what the node depends on along (Shift-drag); a plain drag moves only the node. */
+  /** Take the node's destinations along (Shift-drag); a plain drag moves only the node. */
   subtree: boolean;
 }
 
 /**
  * A link being drawn from a node's side dot. The link points from the node
  * where the drag starts to the node where it stops, with the arrowhead on the
- * stop node (the start node depends on it). Either dot works the same; the
+ * stop node (the destination). Either dot works the same; the
  * side only decides where the arrow leaves the node.
  */
 interface Connecting {
@@ -312,9 +312,9 @@ async function main() {
   /** What linking the connection's node to `target` would mean, and whether it is allowed. */
   function linkFor(c: Connecting, target: string): { from: string; to: string; problem?: string } {
     const [from, to] = [c.node, target];
-    if (from === to) return { from, to, problem: "a node cannot depend on itself" };
+    if (from === to) return { from, to, problem: "a node cannot link to itself" };
     if (graph.edgePairs().some(([f, t]) => f === from && t === to)) return { from, to, problem: "already linked" };
-    if (creates_cycle(json(graph.activePairs()), from, to)) return { from, to, problem: "that would create a dependency cycle" };
+    if (creates_cycle(json(graph.activePairs()), from, to)) return { from, to, problem: "that would create a cycle" };
     return { from, to };
   }
 
@@ -527,35 +527,35 @@ async function main() {
     hint.classList.toggle("active", localDrag !== null || connecting !== null);
     if (connecting) {
       if (!linkTarget) {
-        hint.innerHTML = "Drop on a node to link it, or on empty canvas to create a node it depends on";
+        hint.innerHTML = "Drop on a node to link it, or on empty canvas to create a new destination node";
       } else if (linkTarget.problem) {
         hint.innerHTML = `Can't link: ${linkTarget.problem}`;
       } else {
         const { from, to } = linkFor(connecting, linkTarget.id);
-        hint.innerHTML = `Release to link: <b>${nameOf(from)}</b> → <b>${nameOf(to)}</b> (${nameOf(from)} depends on ${nameOf(to)})`;
+        hint.innerHTML = `Release to link: <b>${nameOf(from)}</b> → <b>${nameOf(to)}</b> (source → destination)`;
       }
     } else if (localDrag) {
       if (localDrag.subtree) {
         hint.innerHTML =
           movingCount > 1
-            ? `Moving <b>${movingCount} nodes</b> (the node and what it depends on) · release <b>Shift</b> to move only this node`
-            : "Moving <b>1 node</b> (it depends on nothing)";
+            ? `Moving <b>${movingCount} nodes</b> (the node and its destinations) · release <b>Shift</b> to move only this node`
+            : "Moving <b>1 node</b> (it has no destinations)";
       } else {
-        hint.innerHTML = "Moving <b>only this node</b> · hold <b>Shift</b> to take what it depends on along";
+        hint.innerHTML = "Moving <b>only this node</b> · hold <b>Shift</b> to take its destinations along";
       }
     } else if (editing) {
       hint.innerHTML = "<b>Enter</b> saves · <b>Shift+Enter</b> starts a new line · <b>Esc</b> cancels";
     } else if (!canEdit) {
       hint.innerHTML = "<b>Read-only</b> (viewer key) · drag the canvas to pan, scroll to zoom";
     } else if (selectedEdge && graph.edges().some((e) => e.key === selectedEdge && e.conflicted)) {
-      hint.innerHTML = "This link would close a dependency cycle, so it is <b>ignored</b> · press <b>Delete</b> to remove it";
+      hint.innerHTML = "This link would close a cycle, so it is <b>ignored</b> · press <b>Delete</b> to remove it";
     } else if (selectedEdge) {
-      hint.innerHTML = "Press <b>Delete</b> to remove the selected link";
+      hint.innerHTML = "Press <b>Space</b> to reverse the selected link · <b>Delete</b> removes it";
     } else if (selectedNode) {
-      hint.innerHTML = "<b>Enter</b> renames · <b>Ctrl+Enter</b> adds a dependant · <b>Delete</b> removes it (its links are joined) · <b>Esc</b> deselects";
+      hint.innerHTML = "<b>Enter</b> renames · <b>Ctrl+Enter</b> adds a source node · <b>Delete</b> removes it (its links are joined) · <b>Esc</b> deselects";
     } else {
       hint.innerHTML =
-        "<b>Double-click</b> empty canvas to add a node, a node to rename it · <b>Drag</b> a node to move it (<b>Shift</b>-drag: with what it depends on)" +
+        "<b>Double-click</b> empty canvas to add a node, a node to rename it · <b>Drag</b> a node to move it (<b>Shift</b>-drag: with its destinations)" +
         "<br>Drag from a node's <b>side dot</b> to another node to link them, or onto empty canvas to create one (the arrow points where you drop) · click a link, then <b>Delete</b>";
     }
   }
@@ -657,8 +657,19 @@ async function main() {
   }
 
   /** Undo or redo this tab's latest change. */
+  let stepping = false;
+  let stepAfter: boolean | null = null; // at most one more step waits for the one in flight
   async function stepHistory(redo: boolean) {
+    if (stepping) {
+      stepAfter = redo;
+      return;
+    }
+    stepping = true;
     await fetch(`/api/graphs/${access.graph}/${redo ? "redo" : "undo"}`, { method: "POST", headers }).catch(() => {});
+    stepping = false;
+    const next = stepAfter;
+    stepAfter = null;
+    if (next !== null) void stepHistory(next);
   }
 
   /** Wait for a node made on the server to arrive over sync. */
@@ -693,7 +704,7 @@ async function main() {
       e.preventDefault();
       const id = editing?.id;
       commitEdit();
-      if (id) createDependant(id);
+      if (id) createSource(id);
     } else if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       commitEdit();
@@ -786,6 +797,20 @@ async function main() {
     void act([{ op: "delete_node", node: id }], "delete node");
   }
 
+  /** Reverse the selected link: the same type, the other way round, in one change. */
+  function swapSelectedEdge() {
+    const edge = graph.edges().find((e) => e.key === selectedEdge);
+    if (!edge) return;
+    selectedEdge = `${edge.to}>${edge.from}`;
+    void act(
+      [
+        { op: "unlink", from: edge.from, to: edge.to },
+        { op: "link", from: edge.to, to: edge.from, edge_type: graph.registry().edgeType(edge.type).name },
+      ],
+      "swap link",
+    );
+  }
+
   function removeSelectedEdge() {
     if (!selectedEdge) return;
     // The key is "from>to". (`edgePairs(key)` would give every link except this one.)
@@ -796,11 +821,18 @@ async function main() {
     else render();
   }
 
-  // Dragging a node moves just that node; hold Shift to take what it depends on along.
+  // Dragging a node moves just that node; hold Shift to take its destinations along.
   // Dragging from a side dot links; dragging the background pans, the wheel zooms.
   app.canvas.addEventListener("pointerdown", onCanvasPress);
 
   window.addEventListener("pointerup", (e) => {
+    if (moveEvent) {
+      cancelAnimationFrame(moveFrame); // the release must see where the pointer got to
+      moveFrame = 0;
+      onPointerMove(moveEvent, moveDx, moveDy);
+      moveEvent = null;
+      moveDx = moveDy = 0;
+    }
     panning = false;
     if (connecting) {
       const c = connecting;
@@ -812,7 +844,7 @@ async function main() {
         if (!link.problem) chooseEdgeType({ from: link.from, to: link.to }, { x: e.clientX, y: e.clientY });
         else render();
       } else if (!target && cameraDistance({ x: c.fromX, y: c.fromY }, w) > 24) {
-        createNode(w, c.node); // dropped on empty canvas: a new node the start node depends on
+        createNode(w, c.node); // dropped on empty canvas: a new destination node
       } else {
         render(); // released on its own node, or barely moved: nothing to do
       }
@@ -825,7 +857,7 @@ async function main() {
     const shown: Record<string, Vec2> = JSON.parse(derive_positions(json(effectivePlaces()))); // as dropped
     dropped = { node: d.node, x: d.x, y: d.y, subtree: d.subtree };
     void act(
-      [{ op: "move_node", node: d.node, x: Math.round(d.x), y: Math.round(d.y), with_dependencies: d.subtree }],
+      [{ op: "move_node", node: d.node, x: Math.round(d.x), y: Math.round(d.y), with_destinations: d.subtree }],
       "move",
     ).then(async (done) => {
       // Keep the preview until the stored layout shows the same place (or the move was refused).
@@ -840,7 +872,27 @@ async function main() {
     render();
   });
 
+  // Moves are applied once per frame, from the latest pointer position, so slow frames never leave a queue of
+  // stale moves to work through. Pan distance adds up so nothing is lost.
+  let moveEvent: PointerEvent | null = null;
+  let moveDx = 0;
+  let moveDy = 0;
+  let moveFrame = 0;
   window.addEventListener("pointermove", (e) => {
+    moveEvent = e;
+    moveDx += e.movementX;
+    moveDy += e.movementY;
+    if (!moveFrame) {
+      moveFrame = requestAnimationFrame(() => {
+        moveFrame = 0;
+        const [last, dx, dy] = [moveEvent!, moveDx, moveDy];
+        moveEvent = null;
+        moveDx = moveDy = 0;
+        onPointerMove(last, dx, dy);
+      });
+    }
+  });
+  function onPointerMove(e: PointerEvent, dx: number, dy: number) {
     if (connecting) {
       const w = worldOf(e);
       connecting.x = w.x;
@@ -855,7 +907,7 @@ async function main() {
       publishDrag();
       render();
     } else if (panning) {
-      camera.panBy(e.movementX, e.movementY);
+      camera.panBy(dx, dy);
       applyCamera();
     } else {
       // Show the side dots on the node under the pointer (with a little slack so
@@ -867,7 +919,7 @@ async function main() {
         applyCamera();
       }
     }
-  });
+  }
 
   /** Close the edge type list without making the link. */
   function closePicker() {
@@ -898,7 +950,7 @@ async function main() {
       "position:fixed;z-index:50;min-width:200px;max-width:320px;max-height:70vh;overflow:auto;padding:6px;border-radius:8px;" +
       "background:var(--panel);color:var(--fg);border:1px solid var(--line);box-shadow:0 6px 24px rgba(0,0,0,.35);font:13px system-ui,sans-serif";
     const head = document.createElement("div");
-    head.textContent = `${nameOf(link.from)} depends on ${nameOf(link.to)}: which kind of link?`;
+    head.textContent = `${nameOf(link.from)} → ${nameOf(link.to)}: which kind of link?`;
     head.style.cssText = "padding:2px 8px 6px;color:var(--muted);font-size:12px";
     box.append(head);
     const buttons: HTMLButtonElement[] = [];
@@ -953,16 +1005,16 @@ async function main() {
 
   /**
    * Add a node centred at `at`, with the layout making room for it, and open
-   * its title for typing. `dependedOnBy` links it: that node depends on the new one.
+   * its title for typing. `sourceId` links it: that node becomes a source pointing at the new one.
    */
-  async function createNode(at: Vec2, dependedOnBy?: string) {
-    const op = { op: "create_node", title: NEW_TITLE, x: Math.round(at.x - NODE_W / 2), y: Math.round(at.y - NODE_H / 2), dependants: dependedOnBy ? [dependedOnBy] : [] };
+  async function createNode(at: Vec2, sourceId?: string) {
+    const op = { op: "create_node", title: NEW_TITLE, x: Math.round(at.x - NODE_W / 2), y: Math.round(at.y - NODE_H / 2), sources: sourceId ? [sourceId] : [] };
     await createAndEdit(op);
   }
 
-  /** Add a node that depends on `parent`, next to it in the flow direction, and open its title. */
-  async function createDependant(parent: string) {
-    await createAndEdit({ op: "create_node", title: NEW_TITLE, depends_on: [parent] });
+  /** Add a source node pointing at `parent`, next to it in the flow direction, and open its title. */
+  async function createSource(parent: string) {
+    await createAndEdit({ op: "create_node", title: NEW_TITLE, destinations: [parent] });
   }
 
   async function createAndEdit(op: object) {
@@ -989,7 +1041,10 @@ async function main() {
     }
     if (e.target instanceof Element && e.target.closest("#margin, #types-panel")) return; // typing in a note or the types panel
     if (e.type !== "keydown" || editing || !canEdit) return;
-    if ((e.key === "Delete" || e.key === "Backspace") && selectedEdge) {
+    if (e.key === " " && selectedEdge) {
+      e.preventDefault();
+      if (!e.repeat) swapSelectedEdge();
+    } else if ((e.key === "Delete" || e.key === "Backspace") && selectedEdge) {
       e.preventDefault();
       removeSelectedEdge();
     } else if ((e.key === "Delete" || e.key === "Backspace") && selectedNode) {
@@ -1000,7 +1055,7 @@ async function main() {
       startEdit(selectedNode);
     } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && selectedNode && lastPositions[selectedNode]) {
       e.preventDefault();
-      createDependant(selectedNode);
+      createSource(selectedNode);
     } else if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z" || e.key === "y")) {
       e.preventDefault();
       void stepHistory(e.key === "y" || e.shiftKey);

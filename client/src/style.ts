@@ -54,8 +54,8 @@ export const BUILTIN_NODE: NodeType = {
 
 export const BUILTIN_EDGE: EdgeType = {
   id: DEFAULT_EDGE_TYPE,
-  name: "depends_on",
-  label: "depends on",
+  name: "link",
+  label: "link",
   color: "#8aa0bd",
   width: 2,
   line_style: "solid",
