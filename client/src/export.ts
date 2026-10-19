@@ -151,7 +151,16 @@ export function exportSvg(scene: Scene, name: string): boolean {
   return true;
 }
 
-/** Save the scene as a PNG file, at twice the size (less if that would be too large for a canvas). Returns false when the graph is empty. */
+/** Put the image on the clipboard. Not every browser or context allows it (it needs a secure page and the user's click), so a refusal is not an error: the file is saved anyway. */
+async function copyImage(blob: Blob) {
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+  } catch {
+    // Saving the file is the export; the copy is a convenience.
+  }
+}
+
+/** Copy the scene to the clipboard as a PNG, then save it as a file, at twice the size (less if that would be too large for a canvas). Returns false when the graph is empty. */
 export async function exportPng(scene: Scene, name: string): Promise<boolean> {
   const out = sceneToSvg(scene);
   if (!out) return false;
@@ -173,6 +182,7 @@ export async function exportPng(scene: Scene, name: string): Promise<boolean> {
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("the browser could not encode the PNG");
+    await copyImage(blob);
     download(blob, name);
     return true;
   } finally {
