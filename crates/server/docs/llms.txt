@@ -50,10 +50,12 @@ Ops (field `op`):
 - delete_node {node}              links through it are joined
 - link {from, to, edge_type?: name}  from (source) links to to (destination); refused if it closes a cycle; relinking retypes
 - unlink {from, to}
-- move_node {node, x, y, with_destinations?}   with_destinations also moves what it links to
+- move_node {node, x, y, with_destinations?}   with_destinations also moves what hangs off it: with the node taken out, every piece of the graph but the largest moves along (all of it if none is clearly largest; a node that splits nothing takes what it links to)
 - set_node_type {node, node_type}       "default" restores the default
 - upsert_node_type {name, new_name?, shape?, bg?, fg?, border?, border_width?, corners?}
 - upsert_edge_type {name, new_name?, label?, color?, text_color?, width?, line_style?, start?, end?}
+- layout {positions: [{node, x, y}, ...]}   sets every node's top-left position at once (all live nodes must be listed)
+- tidy {aspect?}   lays out the whole graph afresh (every position is overwritten; aspect = width/height, default 16/9)
 - remove_node_type {name}, remove_edge_type {name}
 - set_note {node, body}           replace the note
 - append_note {node, text}        safer when others are editing

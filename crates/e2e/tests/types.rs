@@ -40,7 +40,7 @@ async fn types_are_styled_through_the_api_and_the_panel() {
     until("selected", || async { page.selected_node().await.as_deref() == Some(id.as_str()) }).await;
 
     // The panel lists the types, and a new one made in it reaches the server.
-    page.driver.find(By::Id("types-button")).await.unwrap().click().await.unwrap();
+    page.open_tool("types-button").await;
     until("risk in the panel", || async {
         page.js("return document.getElementById('types-panel').textContent").await.as_str().is_some_and(|t| t.contains("risk"))
     })

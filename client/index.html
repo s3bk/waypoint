@@ -58,6 +58,23 @@
       #types-panel .hint { color: var(--muted); }
       #types-panel .problems, #types-panel .error { color: var(--danger); margin: 6px 0; }
       #types-panel .actions { display: flex; gap: 6px; margin-top: 8px; }
+      #menu-button { font-size: 16px; line-height: 1; padding: 5px 9px; }
+      #menu { display: none; flex-direction: column; align-items: stretch; gap: 4px; margin: 6px 0 0 auto; width: 150px; }
+      #menu.open { display: flex; }
+      #menu button { text-align: left; }
+      #layout-panel { display: none; margin-top: 6px; padding: 10px 12px; width: 340px; text-align: left; background: var(--panel); color: var(--soft); border: 1px solid var(--line); border-radius: 8px; }
+      #layout-panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--fg); }
+      #layout-panel .methods { display: flex; flex-direction: column; gap: 6px; }
+      #layout-panel button.pick { display: flex; flex-direction: column; gap: 2px; text-align: left; background: var(--field); }
+      #layout-panel button.pick b { color: var(--fg); font-weight: 600; }
+      #layout-panel button.pick span { color: var(--muted); font-size: 12px; }
+      #layout-panel button.pick.on { border-color: var(--accent); }
+      #layout-panel .status { margin-top: 10px; }
+      #layout-panel .status .error { color: var(--danger); }
+      #layout-panel .actions { display: flex; gap: 6px; margin-top: 8px; }
+      #layout-panel button:disabled { opacity: 0.5; cursor: default; }
+      #layout-panel button.primary { border-color: var(--accent); color: var(--fg); }
+      #layout-panel .hint { display: block; margin-top: 6px; color: var(--muted); }
       #share button.on { color: var(--fg); border-color: var(--accent); }
       #graphs-panel { display: none; margin-top: 6px; padding: 8px; width: 340px; text-align: left; background: var(--panel); color: var(--soft); border: 1px solid var(--line); border-radius: 8px; }
       #graphs-panel ul { list-style: none; margin: 0; padding: 0; }
@@ -102,7 +119,11 @@
     <div id="margin"></div>
     <div id="hint"></div>
     <div id="types-panel"></div>
-    <div id="share"><button id="types-button" type="button">types</button> <button id="graphs-button" type="button">graphs</button> <button id="share-button" type="button">share</button><div id="graphs-panel"></div><div id="share-panel"></div></div>
+    <div id="share">
+      <button id="menu-button" type="button" aria-label="Menu" aria-expanded="false" title="Menu">&#9776;</button>
+      <div id="menu"><button id="layout-button" type="button">layout</button><button id="types-button" type="button">types</button><button id="graphs-button" type="button">graphs</button><button id="share-button" type="button">share</button></div>
+      <div id="layout-panel"></div><div id="graphs-panel"></div><div id="share-panel"></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -41,6 +41,14 @@ impl EdgeTypeId {
 pub const NODE_WIDTH: i32 = 160;
 pub const NODE_HEIGHT: i32 = 56;
 
+/// Where a node should sit: top-left corner in world units.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodePosition {
+    pub node: String,
+    pub x: i32,
+    pub y: i32,
+}
+
 /// A point or offset in world units, integer so sums are exact.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Vec2 {
@@ -148,6 +156,16 @@ pub enum Op {
         #[serde(default, alias = "with_dependencies", alias = "with_subtree")]
         with_destinations: bool,
     },
+    /// Lay out the whole graph afresh, overwriting every position: nodes of a type are grouped,
+    /// no node sits on an unrelated link, edge labels fit and stay clear. `aspect` is the wanted
+    /// width / height of the drawing (default 16 / 9).
+    Tidy {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aspect: Option<f64>,
+    },
+    /// Set every node's position at once (top-left corners), e.g. a layout the person previewed
+    /// and accepted. Every live node must be listed. Anchors are rebuilt from the links.
+    Layout { positions: Vec<NodePosition> },
     /// Give a node a type by name; `"default"` goes back to the default type.
     SetNodeType { node: String, node_type: String },
     /// Create a node type, or change the one with this `name`. Only the given

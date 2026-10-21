@@ -13,7 +13,9 @@ import { exportPng, exportSvg, fileName } from "./export";
 import { NODE_H, NODE_W, type Scene } from "./scene";
 import { LINE_HEIGHT, layoutTitle } from "./wrap";
 import { Graph, type Place, type Vec2 } from "./graph";
+import { setupLayout } from "./layoutMenu";
 import { setupMargin } from "./margin";
+import { setupMenu } from "./menu";
 import { edgeSwatch, setupTypes } from "./types";
 import { hexNum, readableOn } from "./style";
 import { applyTheme } from "./theme";
@@ -74,7 +76,7 @@ interface Drag {
   /** Where the node should end up, absolute in the scope. */
   x: number;
   y: number;
-  /** Take the node's destinations along (Shift-drag); a plain drag moves only the node. */
+  /** Take what hangs off the node along (Shift-drag); a plain drag moves only the node. */
   subtree: boolean;
 }
 
@@ -301,7 +303,7 @@ async function main() {
   /** The side dots of the node under the pointer. Separate from `render`, so hovering and zooming do not rebuild every label. */
   let handles = new Graphics();
   let edgeSegments: { key: string; a: Vec2; b: Vec2 }[] = [];
-  let localDrag: (Drag & { grabX: number; grabY: number }) | null = null;
+  let localDrag: (Drag & { grabX: number; grabY: number; startX: number; startY: number }) | null = null;
   /** A drag that was dropped but whose move has not come back from the server yet; kept on screen so the node does not jump back and forth. */
   let dropped: Drag | null = null;
   let connecting: Connecting | null = null;
@@ -324,9 +326,20 @@ async function main() {
 
   const json = JSON.stringify;
 
+  /** A layout being previewed (top-left corners, in world units), drawn instead of the stored places. */
+  let preview: Record<string, Vec2> | null = null;
+  /** The camera before the preview moved it, to go back to on cancel. */
+  let cameraBefore: { x: number; y: number; zoom: number } | null = null;
+  /** Editing is off while a layout is previewed: the preview is not the graph. */
+  const mayEdit = () => canEdit && !preview;
+
   /** Stored places with every in-progress drag (collaborators', then ours) applied on top. */
   function effectivePlaces(): Record<string, Place> {
     const places = graph.places();
+    if (preview) {
+      for (const id of Object.keys(places)) if (preview[id]) places[id] = { anchor: null, off: preview[id] };
+      return places;
+    }
     const drags: Drag[] = [];
     awareness.getStates().forEach((state, clientId) => {
       const d = state.drag as Drag | null | undefined;
@@ -592,13 +605,15 @@ async function main() {
       if (localDrag.subtree) {
         hint.innerHTML =
           movingCount > 1
-            ? `Moving <b>${movingCount} nodes</b> (the node and its destinations) · release <b>Shift</b> to move only this node`
-            : "Moving <b>1 node</b> (it has no destinations)";
+            ? `Moving <b>${movingCount} nodes</b> (the node and what hangs off it) · release <b>Shift</b> to move only this node`
+            : "Moving <b>1 node</b> (nothing hangs off it)";
       } else {
-        hint.innerHTML = "Moving <b>only this node</b> · hold <b>Shift</b> to take its destinations along";
+        hint.innerHTML = "Moving <b>only this node</b> · hold <b>Shift</b> to take what hangs off it along";
       }
     } else if (editing) {
       hint.innerHTML = "<b>Enter</b> saves · <b>Shift+Enter</b> starts a new line · <b>Esc</b> cancels";
+    } else if (preview) {
+      hint.innerHTML = "<b>Previewing a layout</b> · accept or cancel it in the layout tool (menu, top right) · nothing has been sent";
     } else if (!canEdit) {
       hint.innerHTML = "<b>Read-only</b> (viewer key) · drag the canvas to pan, scroll to zoom";
     } else if (selectedEdge && graph.edges().some((e) => e.key === selectedEdge && e.conflicted)) {
@@ -609,7 +624,7 @@ async function main() {
       hint.innerHTML = "<b>Enter</b> renames · <b>Ctrl+Enter</b> adds a source node · <b>Delete</b> removes it (its links are joined) · <b>Esc</b> deselects";
     } else {
       hint.innerHTML =
-        "<b>Double-click</b> empty canvas to add a node, a node to rename it · <b>Drag</b> a node to move it (<b>Shift</b>-drag: with its destinations)" +
+        "<b>Double-click</b> empty canvas to add a node, a node to rename it · <b>Drag</b> a node to move it (<b>Shift</b>-drag: with what hangs off it)" +
         "<br>Drag from a node's <b>side dot</b> to another node to link them, or onto empty canvas to create one (the arrow points where you drop) · click a link, then <b>Delete</b>";
     }
   }
@@ -784,17 +799,17 @@ async function main() {
     const reach = HANDLE_HIT / camera.zoom;
     const id = nodeAt(w, reach);
     const at = id ? lastPositions[id] : undefined;
-    if (id && at && canEdit) {
+    if (id && at && mayEdit()) {
       // Grabbing a side dot starts a link; anywhere else on the node starts a move.
       const mid = at.y + NODE_H / 2;
       if (Math.hypot(w.x - at.x, w.y - mid) <= reach) return startConnect(id, "left", w);
       if (Math.hypot(w.x - (at.x + NODE_W), w.y - mid) <= reach) return startConnect(id, "right", w);
       if (nodeAt(w) === id) {
-        selectedNode = id;
+        // Selecting waits for the release: only a click selects (and opens the margin), a drag does not.
         return startDrag(id, at, w, e);
       }
     }
-    if (id && at && !canEdit) {
+    if (id && at && !mayEdit()) {
       // A viewer cannot move or link, but can select a node to read its note.
       if (selectedNode !== id || selectedEdge) {
         selectedNode = id;
@@ -831,7 +846,7 @@ async function main() {
   }
 
   function startDrag(id: string, at: Vec2, w: Vec2, e: PointerLike) {
-    localDrag = { node: id, x: at.x, y: at.y, subtree: e.shiftKey, grabX: w.x - at.x, grabY: w.y - at.y };
+    localDrag = { node: id, x: at.x, y: at.y, startX: at.x, startY: at.y, subtree: e.shiftKey, grabX: w.x - at.x, grabY: w.y - at.y };
     shiftDown = e.shiftKey;
     selectedEdge = null;
     publishDrag();
@@ -875,7 +890,7 @@ async function main() {
     else render();
   }
 
-  // Dragging a node moves just that node; hold Shift to take its destinations along.
+  // Dragging a node moves just that node; hold Shift to take what hangs off it along.
   // Dragging from a side dot links; dragging the background pans, the wheel zooms.
   app.canvas.addEventListener("pointerdown", onCanvasPress);
 
@@ -908,6 +923,13 @@ async function main() {
     const d = localDrag;
     localDrag = null;
     publishDrag();
+    if (d.x === d.startX && d.y === d.startY) {
+      // Not moved: a click on the node selects it.
+      selectedNode = d.node;
+      selectedEdge = null;
+      render();
+      return;
+    }
     const shown: Record<string, Vec2> = JSON.parse(derive_positions(json(effectivePlaces()))); // as dropped
     dropped = { node: d.node, x: d.x, y: d.y, subtree: d.subtree };
     void act(
@@ -1079,7 +1101,7 @@ async function main() {
   // Double-click a node to rename it, or empty canvas to add a node there.
   app.canvas.addEventListener("dblclick", (e) => {
     const w = worldOf(e);
-    if (!canEdit) return;
+    if (!mayEdit()) return;
     const hit = nodeAt(w);
     if (hit) startEdit(hit);
     else createNode(w);
@@ -1093,8 +1115,8 @@ async function main() {
       publishDrag();
       render();
     }
-    if (e.target instanceof Element && e.target.closest("#margin, #types-panel")) return; // typing in a note or the types panel
-    if (e.type !== "keydown" || editing || !canEdit) return;
+    if (e.target instanceof Element && e.target.closest("#margin, #types-panel, #layout-panel")) return; // typing in a note or the types panel
+    if (e.type !== "keydown" || editing || !mayEdit()) return;
     if (e.key === " " && selectedEdge) {
       e.preventDefault();
       if (!e.repeat) swapSelectedEdge();
@@ -1185,6 +1207,76 @@ async function main() {
       return from && to ? { from, to } : null;
     },
   });
+  const fitCamera = (positions: Record<string, Vec2>) => {
+    const all = Object.values(positions);
+    if (all.length === 0) return;
+    const [x0, x1] = [Math.min(...all.map((p) => p.x)), Math.max(...all.map((p) => p.x)) + NODE_W];
+    const [y0, y1] = [Math.min(...all.map((p) => p.y)), Math.max(...all.map((p) => p.y)) + NODE_H];
+    camera.zoom = Math.min(1.5, Math.max(0.1, Math.min(innerWidth / (x1 - x0 + 160), innerHeight / (y1 - y0 + 200))));
+    camera.x = (x0 + x1) / 2 - innerWidth / 2 / camera.zoom;
+    camera.y = (y0 + y1) / 2 - innerHeight / 2 / camera.zoom;
+  };
+  setupLayout(document.getElementById("layout-panel")!, document.getElementById("layout-button")!, {
+    canEdit,
+    input: () => {
+      const reg = graph.registry();
+      const places = graph.places();
+      const kinds = new Map<string, number>();
+      const nodes: [string, number][] = Object.keys(places).map((id) => {
+        const t = reg.nodeType(id).id;
+        if (!kinds.has(t)) kinds.set(t, kinds.size);
+        return [id, kinds.get(t)!];
+      });
+      // A link needs room for its label's text (11 px font, about 5.8 px a character); links without a label need none.
+      const edges: [string, string, number][] = graph.edges().map((e) => [e.from, e.to, reg.edgeType(e.type).label.length * 5.8]);
+      // The force-directed layouts stay inside what the screen shows (zoomed out up to 2x, for more room).
+      const z = Math.min(1, Math.max(0.5, camera.zoom));
+      return {
+        nodes,
+        edges,
+        current: JSON.parse(derive_positions(json(places))),
+        aspect: Math.min(3, Math.max(0.5, innerWidth / innerHeight)),
+        bounds: [(innerWidth * 0.9) / z, (innerHeight * 0.9) / z],
+      };
+    },
+    show: (raw) => {
+      // The preview sits where the graph is now: its top-left corner at the stored drawing's.
+      const now = Object.values(JSON.parse(derive_positions(json(graph.places()))) as Record<string, Vec2>);
+      const [dx, dy] = now.length ? [Math.min(...now.map((p) => p.x)), Math.min(...now.map((p) => p.y))] : [0, 0];
+      preview = Object.fromEntries(Object.entries(raw).map(([id, p]) => [id, { x: p.x + dx, y: p.y + dy }]));
+      cameraBefore ??= { x: camera.x, y: camera.y, zoom: camera.zoom };
+      fitCamera(preview);
+      render();
+      wake();
+    },
+    clear: () => {
+      preview = null;
+      if (cameraBefore) Object.assign(camera, cameraBefore);
+      cameraBefore = null;
+      render();
+      wake();
+    },
+    accept: async () => {
+      if (!preview) return "Nothing to apply.";
+      const shown = preview;
+      const done = await act([{ op: "layout", positions: Object.entries(shown).map(([node, p]) => ({ node, x: Math.round(p.x), y: Math.round(p.y) })) }], "layout");
+      if (!done) return "The server refused the layout (the graph may have changed since the preview). Preview again.";
+      // Keep showing it until the stored layout is the same, so nothing jumps.
+      const [probe] = Object.keys(shown);
+      for (let i = 0; probe && i < 40; i++) {
+        const stored: Record<string, Vec2> = JSON.parse(derive_positions(json(graph.places())));
+        if (stored[probe]?.x === Math.round(shown[probe].x) && stored[probe]?.y === Math.round(shown[probe].y)) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      preview = null;
+      cameraBefore = null;
+      render();
+      wake();
+      return null;
+    },
+  });
+  const byId = (id: string) => ({ button: document.getElementById(`${id}-button`)!, panel: document.getElementById(`${id}-panel`)! });
+  setupMenu(["layout", "types", "graphs", "share"].map(byId));
   // Export buttons next to "Types", styled like it. They save what is on the canvas, cropped to the graph.
   const typesButton = document.getElementById("types-button")!;
   const exportButton = (label: string, id: string, run: () => Promise<boolean> | boolean) => {
@@ -1202,7 +1294,7 @@ async function main() {
     };
     return b;
   };
-  typesButton.after(
+  document.getElementById("menu")!.append(
     exportButton("Export SVG", "export-svg-button", () => exportSvg(lastScene, fileName(graph.graphTitle(), "svg"))),
     exportButton("Export PNG", "export-png-button", () => exportPng(lastScene, fileName(graph.graphTitle(), "png"))),
   );

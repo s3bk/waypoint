@@ -29,6 +29,7 @@ async fn drag_moves_one_node_and_shift_drag_takes_its_destinations() {
     until("second to move", || async { (page.rect(&second).await.y - b0.y - 150).abs() <= 2 }).await;
     let a1 = page.rect(&first).await;
     assert_eq!((a1.x, a1.y), (a0.x, a0.y), "first did not move");
+    assert_eq!(page.selected_node().await, None, "a drag does not select the node (and so does not open the margin)");
 
     // Shift-drag of "second": it moves together with its destinations.
     let (a1, b1) = (page.rect(&first).await, page.rect(&second).await);
@@ -37,6 +38,8 @@ async fn drag_moves_one_node_and_shift_drag_takes_its_destinations() {
     until("second to move again", || async { (page.rect(&second).await.y - b1.y - 120).abs() <= 2 }).await;
     let a2 = page.rect(&first).await;
     assert_eq!((a2.x - a1.x, a2.y - a1.y), (40, 120), "first moved along");
+    assert_eq!(page.selected_node().await, None, "nor does a shift-drag");
+    assert_eq!(page.js("return getComputedStyle(document.getElementById('margin')).display").await, serde_json::json!("none"));
 
     // Shift pressed in the middle of the drag counts too.
     let (a2, b2) = (page.rect(&first).await, page.rect(&second).await);

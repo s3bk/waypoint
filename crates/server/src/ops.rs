@@ -60,6 +60,9 @@ struct Work {
 /// A batch creating at least this many nodes without positions gets a layered layout.
 pub const AUTO_LAYOUT_MIN: usize = 3;
 
+/// Farthest a layout may put a node from the origin.
+const MAX_COORD: i32 = 1_000_000;
+
 /// A node's note may hold this many characters.
 fn check_note(text: &str) -> Result<(), String> {
     if text.chars().count() > MAX_NOTE {
@@ -444,6 +447,51 @@ impl Work {
                 self.set_places(changes, None);
                 json!({ "op": "move_node", "id": id.0, "places_changed": moved })
             }
+            Op::Tidy { aspect } => {
+                if self.nodes.is_empty() {
+                    return Ok(json!({ "op": "tidy", "nodes": 0 }));
+                }
+                let kinds: BTreeSet<Option<uuid::Uuid>> = self.nodes.values().map(|n| n.type_id).collect();
+                let kinds: Vec<_> = kinds.into_iter().collect();
+                let nodes: Vec<(NodeId, u32)> = self
+                    .nodes
+                    .values()
+                    .map(|n| (n.id, kinds.iter().position(|k| *k == n.type_id).unwrap_or(0) as u32))
+                    .collect();
+                // Links with a label need room for its text.
+                let pairs = self.pairs();
+                let labels: layout::Labels = self
+                    .edges
+                    .iter()
+                    .filter_map(|e| {
+                        let chars = self.edge_types.iter().find(|t| t.id == e.type_id.0)?.label.chars().count();
+                        (chars > 0).then(|| ((e.from, e.to), chars as f64 * layout::LABEL_CHAR_WIDTH))
+                    })
+                    .collect();
+                let positions = layout::tidy(&nodes, &pairs, aspect.unwrap_or(16.0 / 9.0), &labels);
+                let changes = layout::as_places(&positions, &pairs, Vec2::ZERO);
+                let count = changes.len();
+                self.set_places(changes, None);
+                json!({ "op": "tidy", "nodes": count })
+            }
+            Op::Layout { positions } => {
+                let mut placed: BTreeMap<NodeId, Vec2> = BTreeMap::new();
+                for p in positions {
+                    let id = self.resolve(&p.node)?;
+                    if p.x.abs() > MAX_COORD || p.y.abs() > MAX_COORD {
+                        return Err(format!("positions must stay within {MAX_COORD} of the origin"));
+                    }
+                    placed.insert(id, Vec2::new(p.x, p.y));
+                }
+                if let Some(missing) = self.nodes.keys().find(|id| !placed.contains_key(id)) {
+                    return Err(format!("the layout lacks {} (the graph changed since it was made?)", self.name(*missing)));
+                }
+                let pairs = self.pairs();
+                let changes = layout::as_places(&placed, &pairs, Vec2::ZERO);
+                let count = changes.len();
+                self.set_places(changes, None);
+                json!({ "op": "layout", "nodes": count })
+            }
             Op::SetNote { node, body } => {
                 let id = self.resolve(node)?;
                 check_note(body)?;
@@ -705,6 +753,43 @@ mod tests {
         // After the unlink, b is no longer anchored to a: moving a leaves b alone.
         run(&g, json!([{ "op": "move_node", "node": "#1", "x": 0, "y": -500 }])).unwrap();
         assert_eq!(pos_of(&g, "b"), before["b"]);
+    }
+
+    #[test]
+    fn tidy_places_every_node_clear_of_the_others() {
+        let g = Graph::new();
+        run(
+            &g,
+            json!([
+                { "op": "create_node", "title": "a", "x": 0, "y": 0 },
+                { "op": "create_node", "title": "b", "destinations": ["$0"], "x": 5, "y": 5 },
+                { "op": "create_node", "title": "c", "destinations": ["$0"], "x": 9, "y": 9 },
+                { "op": "create_node", "title": "d", "destinations": ["$1", "$2"], "x": 11, "y": 11 },
+            ]),
+        )
+        .unwrap();
+        let r = run(&g, json!([{ "op": "tidy" }])).unwrap();
+        assert_eq!(r[0]["nodes"], 4);
+        let p = all_positions(&g);
+        let pts: Vec<_> = p.values().copied().collect();
+        for (i, a) in pts.iter().enumerate() {
+            for b in &pts[i + 1..] {
+                assert!((a.x - b.x).abs() >= NODE_WIDTH || (a.y - b.y).abs() >= NODE_HEIGHT, "{a:?} overlaps {b:?}");
+            }
+        }
+        // An empty graph is fine too.
+        assert_eq!(run(&Graph::new(), json!([{ "op": "tidy" }])).unwrap()[0]["nodes"], 0);
+    }
+
+    #[test]
+    fn layout_sets_every_position_and_needs_every_node() {
+        let g = Graph::new();
+        run(&g, json!([{ "op": "create_node", "title": "a", "x": 0, "y": 0 }, { "op": "create_node", "title": "b", "destinations": ["$0"], "x": 400, "y": 0 }])).unwrap();
+        run(&g, json!([{ "op": "layout", "positions": [{ "node": "#1", "x": 10, "y": 20 }, { "node": "#2", "x": 700, "y": 300 }] }])).unwrap();
+        assert_eq!((pos_of(&g, "a"), pos_of(&g, "b")), (Vec2::new(10, 20), Vec2::new(700, 300)));
+        let err = run(&g, json!([{ "op": "layout", "positions": [{ "node": "#1", "x": 0, "y": 0 }] }])).unwrap_err();
+        assert!(err.message.contains("lacks"), "{}", err.message);
+        assert!(run(&g, json!([{ "op": "layout", "positions": [{ "node": "#1", "x": 99999999, "y": 0 }, { "node": "#2", "x": 0, "y": 0 }] }])).is_err());
     }
 
     #[test]

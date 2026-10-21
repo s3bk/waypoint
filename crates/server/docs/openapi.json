@@ -756,6 +756,56 @@
              "type": "object",
              "required": [
               "op",
+              "positions"
+             ],
+             "properties": {
+              "op": {
+               "const": "layout"
+              },
+              "positions": {
+               "type": "array",
+               "description": "every live node, with its top-left corner",
+               "items": {
+                "type": "object",
+                "required": [
+                 "node",
+                 "x",
+                 "y"
+                ],
+                "properties": {
+                 "node": {
+                  "type": "string"
+                 },
+                 "x": {
+                  "type": "integer"
+                 },
+                 "y": {
+                  "type": "integer"
+                 }
+                }
+               }
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op"
+             ],
+             "properties": {
+              "op": {
+               "const": "tidy"
+              },
+              "aspect": {
+               "type": "number",
+               "description": "wanted width / height of the drawing; default 16/9"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
               "name"
              ],
              "properties": {

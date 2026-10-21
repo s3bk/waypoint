@@ -31,7 +31,7 @@ async fn each_key_opens_the_graph_with_its_role() {
     assert_eq!(stack.call(&keys, &format!("wp_editor_{}", "0".repeat(64)), "GET", "/nodes", None).0, 401);
 
     // The Share panel lists what each key can hand out.
-    editor.driver.find(By::Id("share-button")).await.unwrap().click().await.unwrap();
+    editor.open_tool("share-button").await;
     assert_eq!(share_rows(&editor).await, ["editor", "viewer"]);
     assert_eq!(share_rows(&viewer).await, ["viewer"]);
     let owner = stack.page(&keys.owner).await;
@@ -43,7 +43,7 @@ async fn new_graph_button_makes_a_graph_with_a_new_owner_key() {
     let stack = Stack::start();
     let keys = stack.new_graph();
     let owner = stack.page(&keys.owner).await;
-    owner.driver.find(By::Id("share-button")).await.unwrap().click().await.unwrap();
+    owner.open_tool("share-button").await;
     owner.driver.find(By::Id("new-graph-button")).await.unwrap().click().await.unwrap();
     // It moves this tab to the new, unnamed graph (its keys are in the Share panel, with no alert or prompt).
     until("the tab to show the new graph", || async {

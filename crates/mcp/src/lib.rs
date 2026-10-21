@@ -164,7 +164,14 @@ fn tool_list() -> Vec<Value> {
                 "node": node(node_help),
                 "x": { "type": "integer" },
                 "y": { "type": "integer" },
-                "with_destinations": { "type": "boolean", "description": "Also move the nodes it links to, and what they link to (default false: just this node)." }
+                "with_destinations": { "type": "boolean", "description": "Also move what hangs off it: with the node taken out, every piece of the graph but the largest moves along (everything connected if none is clearly largest; a node that splits nothing takes what it links to). Default false: just this node." }
+            } }
+        }),
+        json!({
+            "name": "tidy_graph",
+            "description": "Lay out the whole graph afresh, overwriting every node's position: nodes of one type are grouped, no node sits on an unrelated link, edge labels fit and stay clear of nodes and each other. Takes a moment on big graphs (over 800 nodes get a plain layered drawing). Undo restores the old positions.",
+            "inputSchema": { "type": "object", "properties": {
+                "aspect": { "type": "number", "description": "Wanted width / height of the drawing (default 1.78, a 16:9 screen)." }
             } }
         }),
         json!({
@@ -233,9 +240,9 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "apply_batch",
-            "description": "Apply several operations atomically (all or none), at most 100. Each op is an object with an `op` field: create_node {title, destinations?, sources?}, rename_node {node, title}, delete_node {node}, link {from, to}, unlink {from, to}, move_node {node, x, y, with_destinations?}, set_note {node, body}, append_note {node, text}. A node created earlier in the batch can be referenced as \"$N\" where N is the index of its create_node op.",
+            "description": "Apply several operations atomically (all or none), at most 100. Each op is an object with an `op` field: create_node {title, destinations?, sources?}, rename_node {node, title}, delete_node {node}, link {from, to}, unlink {from, to}, move_node {node, x, y, with_destinations?}, set_note {node, body}, append_note {node, text}, tidy {aspect?}. A node created earlier in the batch can be referenced as \"$N\" where N is the index of its create_node op.",
             "inputSchema": { "type": "object", "required": ["ops"], "properties": {
-                "ops": { "type": "array", "items": { "type": "object", "required": ["op"], "properties": { "op": { "type": "string", "enum": ["create_node", "rename_node", "delete_node", "link", "unlink", "move_node", "set_node_type", "upsert_node_type", "upsert_edge_type", "remove_node_type", "remove_edge_type", "set_note", "append_note"] } } } },
+                "ops": { "type": "array", "items": { "type": "object", "required": ["op"], "properties": { "op": { "type": "string", "enum": ["create_node", "rename_node", "delete_node", "link", "unlink", "move_node", "set_node_type", "tidy", "layout", "upsert_node_type", "upsert_edge_type", "remove_node_type", "remove_edge_type", "set_note", "append_note"] } } } },
                 "label": { "type": "string", "description": "Optional note on what this batch is for." }
             } }
         }),
@@ -324,6 +331,8 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
             "with_destinations": args.get("with_destinations").or(args.get("with_dependencies")).or(args.get("with_subtree")).and_then(Value::as_bool).unwrap_or(false),
         }))
         .map(|r| r["results"][0].clone()),
+        "tidy_graph" => one(json!({ "op": "tidy", "aspect": args.get("aspect").and_then(Value::as_f64) }))
+            .map(|r| r["results"][0].clone()),
         "undo" | "redo" => backend.post(&format!("{base}/{name}"), &json!({})),
         "get_types" => backend.get(&format!("{base}/types")),
         "set_node_type" => one(json!({ "op": "set_node_type", "node": node(args, "node")?, "node_type": str_arg(args, "node_type")? }))
@@ -473,7 +482,7 @@ mod tests {
                 assert!(t["inputSchema"]["properties"][req.as_str().unwrap()].is_object(), "{}: {req}", t["name"]);
             }
         }
-        assert_eq!(names.len(), 26);
+        assert_eq!(names.len(), 27);
     }
 
     #[test]

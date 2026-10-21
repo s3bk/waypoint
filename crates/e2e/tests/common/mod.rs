@@ -170,6 +170,14 @@ impl Page {
         self.driver.execute(script, vec![]).await.expect("script").json().clone()
     }
 
+    /// Open the burger menu and pick a tool by its button id (`types-button`, `layout-button`, ...).
+    pub async fn open_tool(&self, button_id: &str) {
+        if self.js("return getComputedStyle(document.getElementById('menu')).display").await != json!("flex") {
+            self.driver.find(By::Id("menu-button")).await.unwrap().click().await.unwrap();
+        }
+        self.driver.find(By::Id(button_id)).await.unwrap().click().await.unwrap();
+    }
+
     pub async fn role_label(&self) -> String {
         self.js("return document.getElementById('share-button').textContent").await.as_str().unwrap_or_default().to_owned()
     }
