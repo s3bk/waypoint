@@ -56,15 +56,22 @@ One Yjs document per graph:
   deleted node is kept, and restoring is just clearing the flag.
 - Presence is not stored in the document; it goes over the awareness channel.
 
+### Tags
+
+`tags` is a third registry beside `node_types` and `edge_types`: `Y.Map<TagId, Y.Map>` with `name`
+(same rules as type names), `glyph` (one symbol or emoji), `color` and `removed`. A node or a link
+carries a tag with the boolean field `tag:<TagId>` on its own entry (a node's map, every entry of the
+link's pair), so concurrent tagging of different tags merges. Tags that are removed or unknown are
+ignored on read. Retyping a live link keeps its tags; unlinking and linking again starts clean.
+Ops: `upsert_tag`, `remove_tag`, `set_tags {node | from+to, add, remove}`.
+
 ### What a CRDT cannot do, and how we cover it
 
-- **Edges of `acyclic` kinds (e.g. `depends_on`) cannot be enforced at write time.** Two people
-  can each add an edge that is fine alone and forms a cycle once merged. The
-  server runs a check after each merge. If a cycle appears, it marks the
-  most recently added edge in the cycle `conflicted` (a flag in the document,
-  so everyone sees the same thing), excludes it from derived values, and
-  surfaces it in the UI and in agent responses until someone deletes or
-  fixes it. Nothing is silently dropped.
+- **Links form no hierarchy.** Any link is accepted, including ones that close a loop; layout
+  ignores direction. The one exception is a link of a node to itself: the server marks it
+  `conflicted` (a flag in the document, so everyone sees the same thing), excludes it from derived
+  values, and surfaces it in the UI and in agent responses until someone deletes it. Older
+  documents may carry the flag on loop-closing links; it is ignored there.
 - **Validation.** Writes from the human client go straight into the document,
   so the server cannot refuse them. Instead it validates after merge
   (dangling edge endpoints, unknown status values, bad shapes), repairs what

@@ -213,7 +213,7 @@
   },
   "/api/graphs/{graph}/conflicts": {
    "get": {
-    "summary": "Links set aside because they would close a cycle",
+    "summary": "Links set aside because they join a node to itself",
     "security": [
      {
       "bearer": []
@@ -829,6 +829,80 @@
               },
               "name": {
                "type": "string"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "name"
+             ],
+             "properties": {
+              "op": {
+               "const": "upsert_tag"
+              },
+              "name": {
+               "type": "string"
+              },
+              "new_name": {
+               "type": "string"
+              },
+              "glyph": {
+               "type": "string",
+               "description": "one symbol or emoji; required for a new tag"
+              },
+              "color": {
+               "type": "string",
+               "description": "#rrggbb"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op",
+              "name"
+             ],
+             "properties": {
+              "op": {
+               "const": "remove_tag"
+              },
+              "name": {
+               "type": "string"
+              }
+             }
+            },
+            {
+             "type": "object",
+             "required": [
+              "op"
+             ],
+             "properties": {
+              "op": {
+               "const": "set_tags"
+              },
+              "node": {
+               "type": "string",
+               "description": "a node reference; or give from and to for a link"
+              },
+              "from": {
+               "type": "string"
+              },
+              "to": {
+               "type": "string"
+              },
+              "add": {
+               "type": "array",
+               "items": {
+                "type": "string"
+               }
+              },
+              "remove": {
+               "type": "array",
+               "items": {
+                "type": "string"
+               }
               }
              }
             }

@@ -86,6 +86,19 @@
       #share-panel div button { margin-left: auto; flex: none; padding: 2px 8px; }
       #share-panel b { color: var(--fg); }
       #share-panel p { margin: 4px 0 0; font-size: 12px; }
+      #tag-bar {
+        position: fixed; top: 52px; left: 12px; width: 220px; max-height: calc(100vh - 120px); overflow-y: auto; display: none;
+        box-sizing: border-box; padding: 8px; z-index: 2; background: var(--panel); color: var(--soft);
+        border: 1px solid var(--line); border-radius: 8px; font: 13px system-ui, sans-serif;
+      }
+      #tag-bar h3 { margin: 0 0 6px; font-size: 12px; color: var(--fg); font-weight: 600; }
+      #tag-bar button.tag { display: flex; align-items: center; gap: 8px; width: 100%; margin: 3px 0; padding: 2px 6px 2px 2px; background: var(--field); color: var(--soft); border: 1px solid var(--line); border-radius: 6px; font: inherit; cursor: pointer; text-align: left; }
+      #tag-bar button.tag.on { border-color: var(--accent); color: var(--fg); }
+      #tag-bar button.tag:disabled { cursor: default; }
+      #tag-bar h3:not(:first-child) { margin-top: 12px; }
+      #tag-bar .swatch { display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 26px; box-sizing: border-box; font-size: 12px; flex: none; border-radius: 4px; }
+      #tag-bar .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #tag-bar .error { color: var(--danger); margin-top: 6px; }
       #margin {
         position: fixed; top: 52px; right: 12px; bottom: 56px; width: 300px; display: none; flex-direction: column;
         box-sizing: border-box; z-index: 2; background: var(--panel); color: var(--soft); overflow: hidden;
@@ -117,6 +130,7 @@
     <textarea id="editor" rows="2" maxlength="200" spellcheck="false" placeholder="untitled"></textarea>
     <div id="doc-title"></div>
     <div id="margin"></div>
+    <div id="tag-bar"></div>
     <div id="hint"></div>
     <div id="types-panel"></div>
     <div id="share">

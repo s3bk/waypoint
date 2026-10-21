@@ -41,6 +41,24 @@ export interface EdgeType {
   text_color: string;
 }
 
+export interface Tag {
+  id: string;
+  name: string;
+  glyph: string;
+  color: string;
+}
+
+export const DEFAULT_TAG_COLOR = "#e6b450";
+export const MAX_TAGS = 64;
+
+/** One symbol or emoji as a person sees it (a flag, a family or an emoji with a skin tone is one). */
+export function isOneGlyph(s: string): boolean {
+  const g = s.trim();
+  if (!g || [...g].length > 12 || /[\s\p{C}]/u.test(g)) return false;
+  const Seg = (Intl as unknown as { Segmenter?: new (l?: string, o?: object) => { segment(s: string): Iterable<unknown> } }).Segmenter;
+  return Seg ? [...new Seg(undefined, { granularity: "grapheme" }).segment(g)].length === 1 : [...g].length === 1;
+}
+
 export const BUILTIN_NODE: NodeType = {
   id: DEFAULT_NODE_TYPE,
   name: "default",
@@ -175,4 +193,16 @@ export function readEdgeTypes(raw: Iterable<[string, Fields]>, background: strin
     if (contrast(background, d.text_color) < MIN_CONTRAST) d.text_color = readable;
   }
   return uniqueNames(defs);
+}
+
+/** The tags of the document: removed ones and half-written ones (no name or glyph) left out; the earlier id keeps a shared name. */
+export function readTags(raw: Iterable<[string, Fields]>): Tag[] {
+  const found = new Map<string, Tag>();
+  for (const [id, f] of [...raw].filter(([, f]) => f.get("removed") !== true)) {
+    const name = f.get("name");
+    const glyph = typeof f.get("glyph") === "string" ? (f.get("glyph") as string).trim() : "";
+    if (typeof name !== "string" || !/^[a-z0-9_.-]{1,64}$/.test(name) || !isOneGlyph(glyph)) continue;
+    found.set(id, { id, name, glyph, color: color(f, "color", DEFAULT_TAG_COLOR) });
+  }
+  return uniqueNames(found);
 }

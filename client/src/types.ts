@@ -1,4 +1,4 @@
-// The types panel: lists the node types and edge types, applies one to the
+// The types panel: lists the node types, edge types and tags, applies one to the
 // selected node or link, and edits them. Every change is an op sent to the
 // server (`upsert_node_type`, ...), which checks it; the form shows the
 // contrast rules up front so Save is only offered for a style the server will take.
@@ -18,7 +18,11 @@ import {
   MIN_LINE_CONTRAST,
   NODE_SHAPES,
   type NodeType,
+  type Tag,
+  DEFAULT_TAG_COLOR,
+  MAX_TAGS,
   contrast,
+  isOneGlyph,
   normalizeColor,
 } from "./style";
 
@@ -45,7 +49,7 @@ function dashFor(style: string, width: number): string {
   return style === "dashed" ? `${width * 4} ${width * 2.5}` : style === "dotted" ? `0.1 ${width * 2.2}` : "";
 }
 
-function nodeSwatch(t: NodeType): HTMLElement {
+export function nodeSwatch(t: NodeType): HTMLElement {
   const s = el("span", "swatch");
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -106,12 +110,22 @@ export function edgeSwatch(t: EdgeType, background: string): HTMLElement {
   return s;
 }
 
+export function tagChip(t: { glyph: string; color: string }, background: string): HTMLElement {
+  const s = el("span", "swatch edge", t.glyph);
+  s.style.background = background;
+  s.style.color = t.color;
+  s.style.fontSize = "13px";
+  s.style.textAlign = "center";
+  s.style.lineHeight = "26px";
+  return s;
+}
+
 export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: TypesHooks) {
   const { graph } = hooks;
   let open = false;
   let shown = "";
   /** The type being edited (a copy), or a new one with no id. */
-  let editing: { kind: "node" | "edge"; draft: NodeType | EdgeType; isNew: boolean } | null = null;
+  let editing: { kind: "node" | "edge" | "tag"; draft: NodeType | EdgeType | Tag; isNew: boolean } | null = null;
   let message = "";
 
   const toggle = () => {
@@ -211,8 +225,22 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
   function form(background: string): HTMLElement {
     const f = el("div", "form");
     const e = editing!;
-    const original = e.isNew ? "" : (e.draft as NodeType | EdgeType).name;
-    if (e.kind === "node") {
+    const original = e.isNew ? "" : (e.draft as NodeType | EdgeType | Tag).name;
+    if (e.kind === "tag") {
+      const d = e.draft as Tag;
+      f.append(
+        el("h4", undefined, e.isNew ? "New tag" : "Edit tag"),
+        textRow("name", d.name, (v) => (d.name = v)),
+        textRow("symbol", d.glyph, (v) => (d.glyph = v.trim())),
+        colorRow("color", d.color, (c) => (d.color = c), () => "emoji keep their own colours"),
+      );
+      problems = () => {
+        const p: string[] = [];
+        if (!/^[a-z0-9_.-]{1,64}$/.test(d.name.trim().toLowerCase())) p.push("name: a-z 0-9 _ - .");
+        if (!isOneGlyph(d.glyph)) p.push("symbol: exactly one character (a symbol or emoji)");
+        return p;
+      };
+    } else if (e.kind === "node") {
       const d = e.draft as NodeType;
       f.append(
         el("h4", undefined, e.isNew ? "New node type" : `Edit node type`),
@@ -256,7 +284,12 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
       const d = e.draft;
       const name = d.name.trim().toLowerCase();
       const op =
-        e.kind === "node"
+        e.kind === "tag"
+          ? (() => {
+              const n = d as Tag;
+              return { op: "upsert_tag", name: e.isNew ? name : original, new_name: e.isNew ? undefined : name, glyph: n.glyph, color: n.color };
+            })()
+          : e.kind === "node"
           ? (() => {
               const n = d as NodeType;
               return { op: "upsert_node_type", name: e.isNew ? name : original, new_name: e.isNew ? undefined : name, shape: n.shape, bg: n.bg, fg: n.fg, border: n.border, border_width: n.border_width, corners: n.corners };
@@ -276,7 +309,7 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
     };
     const actions = el("div", "actions", undefined);
     actions.append(save, cancel);
-    const id = (e.draft as NodeType | EdgeType).id;
+    const id = (e.draft as NodeType | EdgeType | Tag).id;
     if (!e.isNew && id !== DEFAULT_NODE_TYPE && id !== DEFAULT_EDGE_TYPE) {
       const del = el("button", "danger", "Delete");
       let armed = false;
@@ -286,7 +319,7 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
           del.textContent = "Really delete? What uses it will look like the default";
           return;
         }
-        void run([{ op: e.kind === "node" ? "remove_node_type" : "remove_edge_type", name: original }]);
+        void run([{ op: e.kind === "tag" ? "remove_tag" : e.kind === "node" ? "remove_node_type" : "remove_edge_type", name: original }]);
       };
       actions.append(del);
     }
@@ -300,7 +333,8 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
     const reg = graph.registry();
     const node = hooks.selectedNode();
     const edge = hooks.selectedEdge();
-    const sig = JSON.stringify([reg, node, edge, editing?.kind, editing?.isNew, editing && (editing.draft as { id: string }).id, message, graph.nodes.get(node ?? "")?.get("type")]);
+    const edgeTagIds = edge ? reg.edgeTags(edge.from, edge.to).map((t) => t.id) : [];
+    const sig = JSON.stringify([reg, node, edge, editing?.kind, editing?.isNew, editing && (editing.draft as { id: string }).id, message, graph.nodes.get(node ?? "")?.get("type"), node && reg.nodeTags(node).map((t) => t.id), edgeTagIds]);
     if (sig === shown) return;
     shown = sig;
     panel.replaceChildren();
@@ -376,7 +410,47 @@ export function setupTypes(panel: HTMLElement, button: HTMLElement, hooks: Types
       }
       return sec;
     };
-    panel.append(list("node"), list("edge"));
+    const tagSection = () => {
+      const sec = el("div", "section");
+      sec.append(el("h4", undefined, "Tags"));
+      const onNode = new Set(node ? reg.nodeTags(node).map((t) => t.id) : []);
+      const onEdge = new Set(edgeTagIds);
+      for (const t of reg.tags) {
+        const row = el("div", "type");
+        row.append(tagChip(t, reg.background), el("span", "name", t.name));
+        const toggle = (label: string, has: boolean, ops: (add: boolean) => object[]) => {
+          const b = el("button", undefined, has ? `take off ${label}` : `put on ${label}`);
+          b.onclick = () => void run(ops(!has));
+          row.append(b);
+        };
+        if (hooks.canEdit && node) toggle("node", onNode.has(t.id), (add) => [{ op: "set_tags", node, [add ? "add" : "remove"]: [t.name] }]);
+        if (hooks.canEdit && edge) toggle("link", onEdge.has(t.id), (add) => [{ op: "set_tags", from: edge.from, to: edge.to, [add ? "add" : "remove"]: [t.name] }]);
+        if (hooks.canEdit) {
+          const edit = el("button", undefined, "edit");
+          edit.onclick = () => {
+            editing = { kind: "tag", draft: { ...t }, isNew: false };
+            message = "";
+            shown = "";
+            update();
+          };
+          row.append(edit);
+        }
+        sec.append(row);
+      }
+      if (!reg.tags.length) sec.append(el("small", "hint", "Tags mark nodes and links, e.g. TODO, DONE, assigned to someone."));
+      if (hooks.canEdit && reg.tags.length < MAX_TAGS) {
+        const add = el("button", undefined, "+ new tag");
+        add.onclick = () => {
+          editing = { kind: "tag", draft: { id: "", name: "", glyph: "", color: DEFAULT_TAG_COLOR }, isNew: true };
+          message = "";
+          shown = "";
+          update();
+        };
+        sec.append(add);
+      }
+      return sec;
+    };
+    panel.append(list("node"), list("edge"), tagSection());
     if (editing) panel.append(form(reg.background));
     if (message) panel.append(el("div", "error", message));
     if (!hooks.canEdit) panel.append(el("small", "hint", "You have a viewer key: types can be looked at but not changed."));

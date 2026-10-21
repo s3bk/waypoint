@@ -2,8 +2,8 @@
 //! the document directly, so two of them can each make a change that is fine
 //! alone and invalid once merged. After each merge the server looks for:
 //!
-//! - **cycles**: the newest edge in each is flagged `conflicted`
-//!   (kept, visible, but out of `Snapshot::edges`), so nothing is dropped;
+//! - **self-links**: flagged `conflicted` (kept, visible, but out of `Snapshot::edges`). Cycles
+//!   are fine: links have no direction as far as layout is concerned;
 //! - **anchor cycles**: one member is moved to the scope origin;
 //! - **invalid anchors**: a node anchored to something that is no longer its
 //!   neighbour is re-anchored (the layout crate's `repair_anchors`).
@@ -30,14 +30,11 @@ pub fn plan(snap: &Snapshot) -> Vec<Write> {
         writes.push(Write::Unlink { from, to });
     }
 
-    // Cycles.
-    let mut edges: Vec<(NodeId, NodeId)> = snap.edges.iter().map(|e| (e.from, e.to)).collect();
-    while let Some(cycle) = find_cycle(&edges) {
-        // Ids are time-ordered, so the edge touching the newest node is the
-        // best available stand-in for "most recently added".
-        let &(from, to) = cycle.iter().max_by_key(|&&(f, t)| (f.max(t), f.min(t))).expect("a cycle has edges");
-        writes.push(Write::MarkConflicted { from, to });
-        edges.retain(|&e| e != (from, to));
+    // Links may run in any direction and loop back; only a link to itself is set aside.
+    for e in &snap.edges {
+        if e.from == e.to {
+            writes.push(Write::MarkConflicted { from: e.from, to: e.to });
+        }
     }
 
     // Anchors. Edges that were set aside still join their ends on screen, so
@@ -57,44 +54,6 @@ pub fn plan(snap: &Snapshot) -> Vec<Write> {
         writes.push(Write::SetPlace { id, place });
     }
     writes
-}
-
-/// Some cycle in the graph of `(from, to)` edges, as the edges that form it.
-/// Deterministic: starts from the smallest id and follows the smallest target.
-fn find_cycle(edges: &[(NodeId, NodeId)]) -> Option<Vec<(NodeId, NodeId)>> {
-    let mut next: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
-    for &(a, b) in edges {
-        next.entry(a).or_default().insert(b);
-    }
-    let mut done = BTreeSet::new();
-    for &start in next.keys() {
-        let mut path = vec![start];
-        let mut on_path = BTreeSet::from([start]);
-        // Depth-first with an explicit stack of (node, remaining targets).
-        let mut stack = vec![(start, next[&start].iter().copied().collect::<Vec<_>>())];
-        while let Some((node, targets)) = stack.last_mut() {
-            let node = *node;
-            let Some(target) = targets.pop() else {
-                stack.pop();
-                path.pop();
-                on_path.remove(&node);
-                done.insert(node);
-                continue;
-            };
-            if on_path.contains(&target) {
-                let from = path.iter().position(|&n| n == target).expect("on path");
-                let mut ring: Vec<_> = path[from..].to_vec();
-                ring.push(target);
-                return Some(ring.windows(2).map(|w| (w[0], w[1])).collect());
-            }
-            if !done.contains(&target) {
-                path.push(target);
-                on_path.insert(target);
-                stack.push((target, next.get(&target).into_iter().flatten().copied().collect()));
-            }
-        }
-    }
-    None
 }
 
 /// Places that break every anchor cycle. `derive_positions` shows the members of
@@ -203,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_edges_that_close_a_cycle_flag_the_newest() {
+    fn links_that_close_a_cycle_are_kept() {
         let base = Graph::new();
         let a = node(&base, "a", Place::at_origin(Vec2::ZERO));
         let b = node(&base, "b", Place { anchor: Some(a), off: Vec2::new(200, 0) });
@@ -216,35 +175,21 @@ mod tests {
         for g in [&base, &alice, &bob] {
             sync(g, &server);
         }
-        assert_eq!(server.snapshot().edges.len(), 2);
-
-        let writes = repair(&server);
-        assert_eq!(writes, vec![Write::MarkConflicted { from: b, to: a }], "the edge touching the newer node");
+        assert!(repair(&server).is_empty(), "a loop is a valid graph");
         let snap = server.snapshot();
-        assert_eq!(snap.edges.len(), 1);
-        assert_eq!((snap.conflicted[0].from, snap.conflicted[0].to), (b, a));
-        assert!(repair(&server).is_empty(), "repair is idempotent");
-
-        // The flag reaches clients, and removing the edge is still possible.
-        sync(&server, &alice);
-        assert_eq!(alice.snapshot().conflicted.len(), 1);
-        server.apply_writes(&[Write::Unlink { from: b, to: a }]);
-        assert!(server.snapshot().conflicted.is_empty());
+        assert_eq!((snap.edges.len(), snap.conflicted.len()), (2, 0));
     }
 
     #[test]
-    fn a_long_cycle_loses_one_edge_and_unrelated_edges_are_kept() {
+    fn an_old_flag_on_a_cycle_link_is_ignored() {
         let g = Graph::new();
-        let ids: Vec<_> = (0..4).map(|i| node(&g, "n", Place::at_origin(Vec2::new(i * 300, 0)))).collect();
-        for w in 0..4 {
-            g.create_edge(ids[w], ids[(w + 1) % 4], EdgeTypeId::DEFAULT); // 0 > 1 > 2 > 3 > 0
-        }
-        let extra = node(&g, "x", Place::at_origin(Vec2::new(0, 300)));
-        g.create_edge(extra, ids[0], EdgeTypeId::DEFAULT);
-        repair(&g);
+        let a = node(&g, "a", Place::at_origin(Vec2::ZERO));
+        let b = node(&g, "b", Place::at_origin(Vec2::new(400, 0)));
+        g.create_edge(a, b, EdgeTypeId::DEFAULT);
+        g.create_edge(b, a, EdgeTypeId::DEFAULT);
+        g.apply_writes(&[Write::MarkConflicted { from: b, to: a }]);
         let snap = g.snapshot();
-        assert_eq!((snap.edges.len(), snap.conflicted.len()), (4, 1));
-        assert!(find_cycle(&snap.edges.iter().map(|e| (e.from, e.to)).collect::<Vec<_>>()).is_none());
+        assert_eq!((snap.edges.len(), snap.conflicted.len()), (2, 0));
     }
 
     #[test]
@@ -254,6 +199,7 @@ mod tests {
         g.create_edge(a, a, EdgeTypeId::DEFAULT);
         repair(&g);
         assert_eq!((g.snapshot().edges.len(), g.snapshot().conflicted.len()), (0, 1));
+        assert!(repair(&g).is_empty(), "repair is idempotent");
     }
 
     #[test]

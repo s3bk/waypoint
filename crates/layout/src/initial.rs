@@ -10,7 +10,7 @@
 //!
 //! Deterministic: ties keep the order the nodes were given in.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use waypoint_model::{NODE_HEIGHT, NODE_WIDTH, NodeId, Place, Vec2};
 
@@ -45,6 +45,7 @@ pub fn layered(nodes: &[NodeId], edges: &[(NodeId, NodeId)]) -> BTreeMap<NodeId,
         .filter_map(|(f, t)| Some((*index.get(f)?, *index.get(t)?)))
         .filter(|(f, t)| f != t)
         .collect();
+    let links = acyclic(nodes.len(), &links);
 
     // Layers: longest path from a node with no destinations.
     let n = nodes.len();
@@ -130,6 +131,48 @@ pub fn layered(nodes: &[NodeId], edges: &[(NodeId, NodeId)]) -> BTreeMap<NodeId,
     out
 }
 
+/// The links with those that close a cycle turned round, so layering never meets a cycle: direction
+/// only places columns, it does not limit which links may exist. Duplicates (a link and its reverse) are dropped.
+fn acyclic(n: usize, links: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut next: Vec<Vec<usize>> = vec![vec![]; n];
+    for &(f, t) in links {
+        next[f].push(t);
+    }
+    // 0 unseen, 1 on the path, 2 done. Iterative so a long chain cannot overflow the stack.
+    let mut state = vec![0u8; n];
+    let mut back = BTreeSet::new();
+    for start in 0..n {
+        if state[start] != 0 {
+            continue;
+        }
+        state[start] = 1;
+        let mut stack = vec![(start, 0usize)];
+        while let Some(&mut (v, ref mut i)) = stack.last_mut() {
+            if let Some(&w) = next[v].get(*i) {
+                *i += 1;
+                match state[w] {
+                    0 => {
+                        state[w] = 1;
+                        stack.push((w, 0));
+                    }
+                    1 => {
+                        back.insert((v, w));
+                    }
+                    _ => {}
+                }
+            } else {
+                state[v] = 2;
+                stack.pop();
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    for &(f, t) in links {
+        out.insert(if back.contains(&(f, t)) { (t, f) } else { (f, t) });
+    }
+    out.into_iter().collect()
+}
+
 /// Sort column `c` by the average position, in `order`, of its neighbours in column `reference`.
 /// Items without neighbours keep their place.
 fn reorder(items: &[Item], order: &mut [Vec<usize>], c: usize, reference: usize, use_left: bool) {
@@ -203,17 +246,18 @@ fn settle(items: &[Item], col: &[usize], y: &mut [f64]) {
     }
 }
 
-/// Places for the laid-out `nodes`: each hangs off its nearest destination, and the ones with no
-/// destination sit at `origin` plus their offset. `positions` are those of [`layered`].
+/// Places for the laid-out `nodes`: each hangs off its nearest linked neighbour in an earlier column (a link
+/// counts whichever way it points, and the column is strictly smaller so anchors cannot form a cycle), and the
+/// ones with none sit at `origin` plus their offset. `positions` are those of [`layered`].
 pub fn as_places(positions: &BTreeMap<NodeId, Vec2>, edges: &[(NodeId, NodeId)], origin: Vec2) -> Vec<(NodeId, Place)> {
     positions
         .iter()
         .map(|(&n, &pos)| {
             let anchor = edges
                 .iter()
-                .filter(|(f, t)| *f == n && positions.contains_key(t))
-                .map(|(_, t)| *t)
-                .min_by_key(|t| (positions[t].y - pos.y).abs());
+                .filter_map(|&(f, t)| if f == n { Some(t) } else if t == n { Some(f) } else { None })
+                .filter(|m| positions.get(m).is_some_and(|p| p.x < pos.x))
+                .min_by_key(|m| ((positions[m].y - pos.y).abs(), *m));
             let place = match anchor {
                 Some(a) => Place { anchor: Some(a), off: pos - positions[&a] },
                 None => Place::at_origin(origin + pos),
@@ -290,6 +334,23 @@ mod tests {
         for (id, pos) in &p {
             assert_eq!(back[id], *pos + Vec2::new(100, 200));
         }
+    }
+
+    #[test]
+    fn loops_lay_out_without_overlap_and_anchor_without_a_cycle() {
+        let n = ids(5);
+        // 0 -> 1 -> 2 -> 0, a two-way pair 3 <-> 4, and 4 -> 0.
+        let edges = [(n[0], n[1]), (n[1], n[2]), (n[2], n[0]), (n[3], n[4]), (n[4], n[3]), (n[4], n[0])];
+        let p = layered(&n, &edges);
+        assert_eq!(p.len(), 5);
+        for (i, a) in n.iter().enumerate() {
+            for b in &n[i + 1..] {
+                assert!(!overlap(p[a], p[b]), "{a:?} overlaps {b:?}");
+            }
+        }
+        let places: BTreeMap<_, _> = as_places(&p, &edges, Vec2::ZERO).into_iter().collect();
+        assert_eq!(derive_positions(&places), p, "every node derives its drawn position");
+        assert!(places.values().any(|pl| pl.anchor.is_none()));
     }
 
     #[test]

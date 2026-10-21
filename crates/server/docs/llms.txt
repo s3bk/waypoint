@@ -23,7 +23,7 @@ A new key set: `curl -X POST https://waypoint.qdat.net/api/graphs`. A graph exis
 - GET /api/graphs/{graph}/nodes?q=text&limit=50    search by title or key ("#12")
 - GET /api/graphs/{graph}/nodes/{node}             one node with its links and note
 - GET /api/graphs/{graph}/nodes/{node}/neighbours?direction=both|destinations|sources&depth=1
-- GET /api/graphs/{graph}/conflicts                links set aside because they would close a cycle
+- GET /api/graphs/{graph}/conflicts                links set aside because they join a node to itself
 - GET /api/graphs/{graph}/types                    node types, edge types, background colour
 - GET /api/graphs/{graph}/full                     whole graph as JSON: nodes (with note, position), links, conflicts
 - GET /api/graphs/{graph}/dot                      Graphviz DOT text
@@ -48,7 +48,7 @@ Ops (field `op`):
                                   already in the graph. You do not need to pass positions to build a graph.
 - rename_node {node, title}
 - delete_node {node}              links through it are joined
-- link {from, to, edge_type?: name}  from (source) links to to (destination); refused if it closes a cycle; relinking retypes
+- link {from, to, edge_type?: name}  from (source) links to to (destination); cycles are fine, a link to itself is refused; relinking retypes
 - unlink {from, to}
 - move_node {node, x, y, with_destinations?}   with_destinations also moves what hangs off it: with the node taken out, every piece of the graph but the largest moves along (all of it if none is clearly largest; a node that splits nothing takes what it links to)
 - set_node_type {node, node_type}       "default" restores the default
@@ -57,6 +57,9 @@ Ops (field `op`):
 - layout {positions: [{node, x, y}, ...]}   sets every node's top-left position at once (all live nodes must be listed)
 - tidy {aspect?}   lays out the whole graph afresh (every position is overwritten; aspect = width/height, default 16/9)
 - remove_node_type {name}, remove_edge_type {name}
+- upsert_tag {name, new_name?, glyph?, color?}   a tag is a coloured one-glyph symbol (an emoji or symbol; `glyph` is required to create one)
+- remove_tag {name}
+- set_tags {node | from+to, add?: [tag name], remove?: [tag name]}   put tags on a node, or on the link from -> to
 - set_note {node, body}           replace the note
 - append_note {node, text}        safer when others are editing
 
@@ -66,6 +69,7 @@ Nodes and edges have a type (a name; the default node type is `default`, the def
 - Node type: shape (rect, pill, ellipse, hexagon, rhombus), corners (round, square; for rect, hexagon and rhombus), bg + fg (fill and title; give both; contrast >= 4.5:1), border, border_width (0-10); borders are solid.
 - Edge type: color (the line; contrast >= 3:1 with the graph background), text_color (the label; >= 4.5:1), width (1-10), line_style, start and end (none, arrow, dot, bar; `end` is at the destination).
 - Out-of-range widths are clamped; bad colours, pairs or shapes fail the op (422) and say why.
+- Tags (`todo`, `done`, `assigned-seb`...): defined in the same registry area (`get_types` lists `tags`), referenced by id in the document. Nodes and links can carry several; `get_node`/`get_full_graph` list tag names.
 - PUT /api/graphs/{graph}/background {color}   owner key only; edge types that would stop being readable on it are recoloured black or white and listed in the reply.
 
 - POST /api/graphs/{graph}/undo and /redo   undo or redo your own latest batch, as identified by your peer id (409 if none)

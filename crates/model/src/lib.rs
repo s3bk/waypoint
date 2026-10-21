@@ -173,6 +173,23 @@ pub enum Op {
     UpsertNodeType(style::NodeSpec),
     /// Same for edge types: `color`, `width`, `line_style`, `start`/`end` arrows, `text_color`.
     UpsertEdgeType(style::EdgeSpec),
+    /// Create a tag, or change the one with this `name`: a coloured one-glyph symbol for nodes and links.
+    UpsertTag(style::TagSpec),
+    /// Remove a tag; it disappears from everything that had it.
+    RemoveTag { name: String },
+    /// Add and remove tags (by name) on a node, or on the link `from` -> `to`. Give `node`, or `from` and `to`.
+    SetTags {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+        #[serde(default)]
+        add: Vec<String>,
+        #[serde(default)]
+        remove: Vec<String>,
+    },
     /// Remove a type. Nodes or edges that used it show the default style.
     RemoveNodeType { name: String },
     RemoveEdgeType { name: String },

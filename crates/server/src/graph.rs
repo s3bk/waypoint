@@ -16,7 +16,7 @@ use std::{
 use uuid::Uuid;
 use waypoint_model::{
     EdgeTypeId, NodeId, Place, Vec2,
-    style::{self, EdgeType, Kind, NodeType},
+    style::{self, EdgeType, Kind, NodeType, Tag},
 };
 use yrs::{
     Any, Array, ArrayRef, Doc, GetString, Map, MapPrelim, MapRef, Origin, Out, ReadTxn, StateVector, Text, TextPrelim,
@@ -34,6 +34,7 @@ pub struct Graph {
     /// The type registries: `Y.Map<type id, Y.Map>`, one field per key. Only
     /// entries that differ from the built-in defaults need to exist.
     node_types: MapRef,
+    tags: MapRef,
     edge_types: MapRef,
     /// Who changed what: one JSON string per batch, appended in the same
     /// transaction as the batch. Not tracked by undo, so undoing leaves a trace.
@@ -57,6 +58,8 @@ pub struct NodeRec {
     pub note: String,
     /// The node's type; `None` means the default node type.
     pub type_id: Option<Uuid>,
+    /// Ids of the tags on the node (only tags that exist).
+    pub tags: BTreeSet<Uuid>,
 }
 
 /// A live edge: `from` links to `to`.
@@ -85,6 +88,9 @@ pub struct Snapshot {
     /// The registries as they stand: built-in defaults overlaid with the document's entries, removed ones left out.
     pub node_types: Vec<NodeType>,
     pub edge_types: Vec<EdgeType>,
+    pub tags: Vec<Tag>,
+    /// Tags on each live link, by ordered pair (only tags that exist).
+    pub edge_tags: BTreeMap<(NodeId, NodeId), BTreeSet<Uuid>>,
     /// The canvas colour, set by the owner; edge colours and text are kept readable on it.
     pub background: String,
 }
@@ -104,6 +110,23 @@ impl Snapshot {
     pub fn places(&self) -> BTreeMap<NodeId, Place> {
         self.nodes.iter().map(|(&id, n)| (id, n.place)).collect()
     }
+}
+
+/// What a tag is put on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TagTarget {
+    Node(NodeId),
+    Link(NodeId, NodeId),
+}
+
+/// The key under which an entry records that it has a tag.
+fn tag_key(tag: Uuid) -> String {
+    format!("tag:{tag}")
+}
+
+/// The tags an entry's fields say it has.
+fn tags_of(f: &HashMap<String, Any>) -> BTreeSet<Uuid> {
+    f.iter().filter(|(k, v)| matches!(v, Any::Bool(true)) && k.starts_with("tag:")).filter_map(|(k, _)| k[4..].parse().ok()).collect()
 }
 
 /// One change to the document. A list of these is applied as a single
@@ -133,6 +156,8 @@ pub enum Write {
     SetBackground { color: String },
     /// Mark a registry entry removed.
     RemoveType { kind: Kind, id: Uuid },
+    /// Put a tag on, or take it off, a node or a link.
+    SetTag { target: TagTarget, tag: Uuid, on: bool },
     /// Change the node's note by editing only the part that differs.
     SetNote { id: NodeId, body: String },
     /// Add text at the end of the node's note.
@@ -195,6 +220,16 @@ pub fn node_diff(old: Option<&NodeType>, new: &NodeType) -> Vec<(String, serde_j
     all.into_iter().filter(|(_, n, o)| o.as_ref() != Some(n)).map(|(k, n, _)| (k.to_owned(), n)).collect()
 }
 
+pub fn tag_diff(old: Option<&Tag>, new: &Tag) -> Vec<(String, serde_json::Value)> {
+    use serde_json::{Value, json};
+    let all: [(&str, Value, Option<Value>); 3] = [
+        ("name", json!(new.name), old.map(|o| json!(o.name))),
+        ("glyph", json!(new.glyph), old.map(|o| json!(o.glyph))),
+        ("color", json!(new.color), old.map(|o| json!(o.color))),
+    ];
+    all.into_iter().filter(|(_, n, o)| o.as_ref() != Some(n)).map(|(k, n, _)| (k.to_owned(), n)).collect()
+}
+
 pub fn edge_diff(old: Option<&EdgeType>, new: &EdgeType) -> Vec<(String, serde_json::Value)> {
     use serde_json::{Value, json};
     let all: [(&str, Value, Option<Value>); 8] = [
@@ -222,8 +257,9 @@ impl Graph {
         let meta = doc.get_or_insert_map("meta");
         let node_types = doc.get_or_insert_map("node_types");
         let edge_types = doc.get_or_insert_map("edge_types");
+        let tags = doc.get_or_insert_map("tags");
         let log = doc.get_or_insert_array("log");
-        Self { doc, nodes, edges, meta, node_types, edge_types, log, undo: Mutex::new(HashMap::new()) }
+        Self { doc, nodes, edges, meta, node_types, edge_types, tags, log, undo: Mutex::new(HashMap::new()) }
     }
 
     /// Insert a node. Used for seeding and tests; edits from the API go through
@@ -263,6 +299,7 @@ impl Graph {
         manager.expand_scope(&self.edges);
         manager.expand_scope(&self.node_types);
         manager.expand_scope(&self.edge_types);
+        manager.expand_scope(&self.tags);
         all.insert(actor.to_owned(), manager);
     }
 
@@ -326,7 +363,15 @@ impl Graph {
                     }
                 }
                 Write::Link { from, to, type_id } => {
-                    self.edges.insert(
+                    // Changing the type of a live link keeps its tags.
+                    let kept = match self.edges.get(&txn, &edge_key(*from, *to)) {
+                        Some(Out::YMap(m)) => match m.to_json(&txn) {
+                            Any::Map(f) if !any_bool(f.get("deleted")) => tags_of(&f),
+                            _ => BTreeSet::new(),
+                        },
+                        _ => BTreeSet::new(),
+                    };
+                    let entry = self.edges.insert(
                         &mut txn,
                         edge_key(*from, *to),
                         MapPrelim::from([
@@ -336,6 +381,9 @@ impl Graph {
                             ("deleted".to_string(), Any::from(false)),
                         ]),
                     );
+                    for tag in kept {
+                        entry.insert(&mut txn, tag_key(tag), Any::from(true));
+                    }
                 }
                 Write::Unlink { from, to } => self.delete_edges(&mut txn, |f, t| f == *from && t == *to),
                 Write::SetGraphTitle { title } => {
@@ -395,6 +443,14 @@ impl Graph {
                     }
                     self.delete_edges(&mut txn, |f, t| f == *id || t == *id);
                 }
+                Write::SetTag { target, tag, on } => match target {
+                    TagTarget::Node(id) => {
+                        if let Some(Out::YMap(m)) = self.nodes.get(&txn, &id.0.to_string()) {
+                            m.insert(&mut txn, tag_key(*tag), Any::from(*on));
+                        }
+                    }
+                    TagTarget::Link(from, to) => self.update_edges_with(&mut txn, |f, t| f == *from && t == *to, &tag_key(*tag), *on),
+                },
                 Write::SetNote { id, body } => {
                     if let Some(text) = self.note_text(&mut txn, *id) {
                         let old = text.get_string(&txn);
@@ -423,6 +479,7 @@ impl Graph {
         match kind {
             Kind::Node => &self.node_types,
             Kind::Edge => &self.edge_types,
+            Kind::Tag => &self.tags,
         }
     }
 
@@ -432,6 +489,7 @@ impl Graph {
         let builtin = match kind {
             Kind::Node => style::DEFAULT_NODE_TYPE,
             Kind::Edge => style::DEFAULT_EDGE_TYPE,
+            Kind::Tag => Uuid::nil(),
         };
         let Any::Map(entries) = self.registry(kind).to_json(txn) else { return Vec::new() };
         entries
@@ -485,6 +543,20 @@ impl Graph {
         }
         let mut seen = BTreeSet::new();
         defs.into_values().filter(|d| seen.insert(d.name.clone())).collect()
+    }
+
+    /// The tags: every live registry entry that has a usable name and glyph (a half-written one is left out).
+    /// When two share a name the one with the earlier id keeps it.
+    fn read_tags(&self, txn: &impl ReadTxn) -> Vec<Tag> {
+        let mut found = BTreeMap::new();
+        for (id, f) in self.registry_entries(txn, Kind::Tag) {
+            let Some(name) = any_str(f.get("name")).and_then(|n| style::normalize_name(n).ok()) else { continue };
+            let Some(glyph) = any_str(f.get("glyph")).map(str::trim).filter(|g| style::is_one_glyph(g)) else { continue };
+            let color = any_str(f.get("color")).and_then(|c| style::normalize_color(c).ok()).unwrap_or_else(|| style::builtin_tag_color().into());
+            found.insert(id, Tag { id, name, glyph: glyph.to_owned(), color });
+        }
+        let mut seen = BTreeSet::new();
+        found.into_values().filter(|t| seen.insert(t.name.clone())).collect()
     }
 
     /// Like [`Graph::read_node_types`]; the line and text colours must also read on `background`,
@@ -546,6 +618,10 @@ impl Graph {
 
     /// Set the boolean `flag` on every edge entry whose ends satisfy `matches`.
     fn update_edges(&self, txn: &mut yrs::TransactionMut, matches: impl Fn(NodeId, NodeId) -> bool, flag: &str) {
+        self.update_edges_with(txn, matches, flag, true);
+    }
+
+    fn update_edges_with(&self, txn: &mut yrs::TransactionMut, matches: impl Fn(NodeId, NodeId) -> bool, flag: &str, value: bool) {
         let mut hit = Vec::new();
         for (key, value) in self.edges.iter(txn) {
             let Out::YMap(m) = value else { continue };
@@ -559,7 +635,7 @@ impl Graph {
             }
         }
         for (_, m) in hit {
-            m.insert(txn, flag, Any::from(true));
+            m.insert(txn, flag, Any::from(value));
         }
     }
 
@@ -577,6 +653,8 @@ impl Graph {
         };
         snap.node_types = self.read_node_types(&txn);
         snap.edge_types = self.read_edge_types(&txn, &snap.background);
+        snap.tags = self.read_tags(&txn);
+        let known: BTreeSet<Uuid> = snap.tags.iter().map(|t| t.id).collect();
         if let Any::Map(nodes) = self.nodes.to_json(&txn) {
             for (key, node) in nodes.iter() {
                 let (Some(id), Any::Map(f)) = (parse_node(key), node) else { continue };
@@ -593,6 +671,7 @@ impl Graph {
                         place,
                         note: any_str(f.get("note")).unwrap_or("").to_owned(),
                         type_id: any_str(f.get("type")).and_then(|t| t.parse::<Uuid>().ok()),
+                        tags: tags_of(f).intersection(&known).copied().collect(),
                     },
                 );
             }
@@ -627,7 +706,9 @@ impl Graph {
                     .map(EdgeTypeId)
                     .unwrap_or(EdgeTypeId::DEFAULT);
                 let rec = EdgeRec { from, to, type_id };
-                if any_bool(f.get("conflicted")) {
+                snap.edge_tags.entry((from, to)).or_default().extend(tags_of(f).intersection(&known));
+                // Only a link to itself is set aside now; older graphs flagged links that closed a cycle, which are fine.
+                if any_bool(f.get("conflicted")) && from == to {
                     flagged.entry((from, to)).or_insert(rec);
                 } else {
                     live.entry((from, to)).or_insert(rec);

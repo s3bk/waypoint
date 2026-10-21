@@ -13,13 +13,18 @@ use crate::ops::resolve_ref;
 const MAX_NEIGHBOURS: usize = 200;
 const MAX_DEPTH: usize = 5;
 
+/// The names of the tags with these ids, in registry order.
+fn tag_names(snap: &Snapshot, ids: &BTreeSet<uuid::Uuid>) -> Vec<String> {
+    snap.tags.iter().filter(|t| ids.contains(&t.id)).map(|t| t.name.clone()).collect()
+}
+
 fn brief(n: &NodeRec) -> Value {
     json!({ "id": n.id.0, "key": n.key, "ref": n.key.map(|k| format!("#{k}")), "title": n.title })
 }
 
 /// The type registries and the canvas colour: what an agent needs to style things.
 pub fn types(snap: &Snapshot) -> Value {
-    json!({ "background": snap.background, "node_types": snap.node_types, "edge_types": snap.edge_types })
+    json!({ "background": snap.background, "node_types": snap.node_types, "edge_types": snap.edge_types, "tags": snap.tags })
 }
 
 pub fn summary(snap: &Snapshot) -> Value {
@@ -39,12 +44,19 @@ pub fn full(snap: &Snapshot) -> Value {
             let mut v = brief(n);
             v["note"] = json!(n.note);
             v["node_type"] = json!(snap.node_type(n.type_id).name);
+            v["tags"] = json!(tag_names(snap, &n.tags));
             v["position"] = json!({ "x": pos[&n.id].x, "y": pos[&n.id].y });
             v
         })
         .collect();
     let links = |edges: &[crate::graph::EdgeRec]| -> Vec<Value> {
-        edges.iter().map(|e| json!({ "from": label(e.from), "to": label(e.to), "edge_type": snap.edge_type(e.type_id).name })).collect()
+        edges
+            .iter()
+            .map(|e| {
+                let tags = snap.edge_tags.get(&(e.from, e.to)).map(|t| tag_names(snap, t)).unwrap_or_default();
+                json!({ "from": label(e.from), "to": label(e.to), "edge_type": snap.edge_type(e.type_id).name, "tags": tags })
+            })
+            .collect()
     };
     json!({
         "title": snap.title,
@@ -56,8 +68,7 @@ pub fn full(snap: &Snapshot) -> Value {
     })
 }
 
-/// Links the server set aside because two people's changes together closed a
-/// cycle. They are not in any other result; `unlink_nodes` removes one.
+/// Links the server set aside because they join a node to itself. They are not in any other result; `unlink_nodes` removes one.
 pub fn conflicts(snap: &Snapshot) -> Value {
     let label = |id: NodeId| snap.nodes[&id].key.map(|k| format!("#{k}")).unwrap_or_else(|| id.0.to_string());
     let title = |id: NodeId| snap.nodes[&id].title.clone();
@@ -65,7 +76,7 @@ pub fn conflicts(snap: &Snapshot) -> Value {
         "conflicts": snap.conflicted.iter().map(|e| json!({
             "from": label(e.from), "from_title": title(e.from),
             "to": label(e.to), "to_title": title(e.to),
-            "meaning": "from is the source and to the destination; this link would close a cycle",
+            "meaning": "from is the source and to the destination; this link joins a node to itself",
         })).collect::<Vec<_>>(),
     })
 }
@@ -103,6 +114,7 @@ pub fn node(snap: &Snapshot, reference: &str) -> Result<Value, String> {
     v["sources"] = Value::Array(list(&|e| (e.to == id).then_some(e.from)));
     v["note"] = json!(n.note);
     v["node_type"] = json!(snap.node_type(n.type_id).name);
+    v["tags"] = json!(tag_names(snap, &n.tags));
     Ok(v)
 }
 

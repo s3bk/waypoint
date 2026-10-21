@@ -13,10 +13,10 @@ use uuid::Uuid;
 use waypoint_layout as layout;
 use waypoint_model::{
     EdgeTypeId, NODE_HEIGHT, NODE_WIDTH, NodeId, Op, Place, Vec2,
-    style::{self, EdgeType, Kind, NodeType},
+    style::{self, EdgeType, Kind, NodeType, Tag},
 };
 
-use crate::graph::{EdgeRec, NodeRec, Snapshot, Write, edge_diff, node_diff};
+use crate::graph::{EdgeRec, NodeRec, Snapshot, TagTarget, Write, edge_diff, node_diff, tag_diff};
 
 pub const MAX_OPS: usize = 100;
 const MAX_TITLE: usize = 200;
@@ -42,10 +42,12 @@ struct Work {
     nodes: BTreeMap<NodeId, NodeRec>,
     places: BTreeMap<NodeId, Place>,
     edges: Vec<EdgeRec>,
-    /// Set aside by the server for closing a cycle; they can only be removed.
+    /// Set aside by the server (a link to itself); they can only be removed.
     conflicted: Vec<EdgeRec>,
     node_types: Vec<NodeType>,
     edge_types: Vec<EdgeType>,
+    tags: Vec<Tag>,
+    edge_tags: BTreeMap<(NodeId, NodeId), BTreeSet<uuid::Uuid>>,
     background: String,
     writes: Vec<Write>,
     /// The node each op created, by op index, for `$N` references.
@@ -83,6 +85,8 @@ pub fn plan(snapshot: &Snapshot, ops: &[Op]) -> Result<Plan, OpError> {
         conflicted: snapshot.conflicted.clone(),
         node_types: snapshot.node_types.clone(),
         edge_types: snapshot.edge_types.clone(),
+        tags: snapshot.tags.clone(),
+        edge_tags: snapshot.edge_tags.clone(),
         background: snapshot.background.clone(),
         writes: Vec::new(),
         created: Vec::with_capacity(ops.len()),
@@ -213,6 +217,18 @@ impl Work {
         })
     }
 
+    fn tag_named(&self, name: &str) -> Result<&Tag, String> {
+        let n = style::normalize_name(name)?;
+        self.tags.iter().find(|t| t.name == n).ok_or_else(|| {
+            let names: Vec<_> = self.tags.iter().map(|t| t.name.as_str()).collect();
+            format!("no tag {n:?}; the tags are {} (create one with upsert_tag)", if names.is_empty() { "none yet".to_owned() } else { names.join(", ") })
+        })
+    }
+
+    fn tag_names(&self, ids: &BTreeSet<uuid::Uuid>) -> Vec<String> {
+        self.tags.iter().filter(|t| ids.contains(&t.id)).map(|t| t.name.clone()).collect()
+    }
+
     fn edge_type_named(&self, name: &str) -> Result<&EdgeType, String> {
         let n = style::normalize_name(name)?;
         // The default edge type used to be called "depends_on"; graphs made then still have it under that name.
@@ -233,7 +249,7 @@ impl Work {
         }
     }
 
-    /// Add "from is the source, to the destination", refusing self-links and cycles. Returns whether it was new.
+    /// Add "from is the source, to the destination", refusing self-links (links may run in any direction, and loop back). Returns whether it was new.
     /// Linking an existing pair with another `type_id` changes its type.
     fn link(&mut self, from: NodeId, to: NodeId, type_id: Option<EdgeTypeId>) -> Result<bool, String> {
         if from == to {
@@ -247,15 +263,6 @@ impl Work {
             return Ok(false);
         }
         let type_id = type_id.unwrap_or(EdgeTypeId::DEFAULT);
-        if layout::creates_cycle(&self.pairs(), from, to) {
-            return Err(format!(
-                "linking {} to {} would create a cycle ({} already links to {}, directly or not)",
-                self.name(from),
-                self.name(to),
-                self.name(to),
-                self.name(from)
-            ));
-        }
         self.edges.push(EdgeRec { from, to, type_id });
         self.writes.push(Write::Link { from, to, type_id });
         Ok(true)
@@ -290,7 +297,7 @@ impl Work {
                     // Laid out with the rest of the batch at the end; until then it waits where nothing else is.
                     let own = Place::at_origin(origin);
                     self.writes.push(Write::CreateNode { id, title: title.clone(), place: own });
-                    self.nodes.insert(id, NodeRec { id, key: None, title: title.clone(), place: own, note: String::new(), type_id: None });
+                    self.nodes.insert(id, NodeRec { id, key: None, title: title.clone(), place: own, note: String::new(), type_id: None, tags: Default::default() });
                     self.places.insert(id, own);
                     self.deferred.push(id);
                     self.created.push(Some(id));
@@ -308,7 +315,7 @@ impl Work {
                 let changes = layout::add_node(&self.places, &self.pairs(), id, parent, at);
                 let own = changes.iter().find(|(n, _)| *n == id).map(|(_, p)| *p).expect("add_node places the new node");
                 self.writes.push(Write::CreateNode { id, title: title.clone(), place: own });
-                self.nodes.insert(id, NodeRec { id, key: None, title: title.clone(), place: own, note: String::new(), type_id: None });
+                self.nodes.insert(id, NodeRec { id, key: None, title: title.clone(), place: own, note: String::new(), type_id: None, tags: Default::default() });
                 self.created.push(Some(id)); // so the links below, and later ops, can name it
                 self.set_places(changes, Some(id));
                 if let Some(t) = node_type {
@@ -350,6 +357,7 @@ impl Work {
                 self.writes.push(Write::DeleteNode { id });
                 self.places.remove(&id);
                 self.nodes.remove(&id);
+                self.edge_tags.retain(|(f, t), _| *f != id && *t != id);
                 self.edges = remaining.into_iter().map(|(from, to, type_id)| EdgeRec { from, to, type_id }).collect();
                 json!({ "op": "delete_node", "deleted": name, "joined": bridges.len() })
             }
@@ -403,6 +411,66 @@ impl Work {
                 self.edge_types.push(new.clone());
                 json!({ "op": "upsert_edge_type", "created": old.is_none(), "type": new })
             }
+            Op::UpsertTag(spec) => {
+                let name = style::normalize_name(&spec.name)?;
+                let old = self.tags.iter().find(|t| t.name == name).cloned();
+                let new = match &old {
+                    Some(old) => style::apply_tag(old.clone(), spec)?,
+                    None if self.tags.len() >= MAX_TYPES => return Err(format!("a graph may have at most {MAX_TYPES} tags")),
+                    None => style::new_tag(spec)?,
+                };
+                if old.as_ref().is_none_or(|o| o.name != new.name) && self.tags.iter().any(|t| t.name == new.name && t.id != new.id) {
+                    return Err(format!("there is already a tag named {:?}", new.name));
+                }
+                let fields = tag_diff(old.as_ref(), &new);
+                if !fields.is_empty() {
+                    self.writes.push(Write::UpsertType { kind: Kind::Tag, id: new.id, fields });
+                }
+                self.tags.retain(|t| t.id != new.id);
+                self.tags.push(new.clone());
+                json!({ "op": "upsert_tag", "created": old.is_none(), "tag": new })
+            }
+            Op::RemoveTag { name } => {
+                let t = self.tag_named(name)?.clone();
+                self.writes.push(Write::RemoveType { kind: Kind::Tag, id: t.id });
+                self.tags.retain(|x| x.id != t.id);
+                let users = self.nodes.values().filter(|n| n.tags.contains(&t.id)).count() + self.edge_tags.values().filter(|s| s.contains(&t.id)).count();
+                json!({ "op": "remove_tag", "removed": t.name, "was_on": users })
+            }
+            Op::SetTags { node, from, to, add, remove } => {
+                let adding = add.iter().map(|n| self.tag_named(n).map(|t| t.id)).collect::<Result<Vec<_>, _>>()?;
+                let removing = remove.iter().map(|n| self.tag_named(n).map(|t| t.id)).collect::<Result<Vec<_>, _>>()?;
+                if let Some(t) = adding.iter().find(|t| removing.contains(t)) {
+                    return Err(format!("tag {:?} is in both `add` and `remove`", self.tags.iter().find(|x| x.id == *t).map(|x| x.name.as_str()).unwrap_or("")));
+                }
+                let changes: Vec<(uuid::Uuid, bool)> = adding.into_iter().map(|t| (t, true)).chain(removing.into_iter().map(|t| (t, false))).collect();
+                match (node, from, to) {
+                    (Some(node), None, None) => {
+                        let id = self.resolve(node)?;
+                        let target = TagTarget::Node(id);
+                        let have = &mut self.nodes.get_mut(&id).ok_or("no such node")?.tags;
+                        for &(tag, on) in &changes {
+                            if on { have.insert(tag) } else { have.remove(&tag) };
+                            self.writes.push(Write::SetTag { target, tag, on });
+                        }
+                        json!({ "op": "set_tags", "id": id.0, "tags": self.tag_names(&self.nodes[&id].tags) })
+                    }
+                    (None, Some(from), Some(to)) => {
+                        let (from, to) = (self.resolve(from)?, self.resolve(to)?);
+                        if !self.edges.iter().any(|e| e.from == from && e.to == to) {
+                            return Err(format!("{} is not linked to {}", self.name(from), self.name(to)));
+                        }
+                        let target = TagTarget::Link(from, to);
+                        let have = self.edge_tags.entry((from, to)).or_default();
+                        for &(tag, on) in &changes {
+                            if on { have.insert(tag) } else { have.remove(&tag) };
+                            self.writes.push(Write::SetTag { target, tag, on });
+                        }
+                        json!({ "op": "set_tags", "from": from.0, "to": to.0, "tags": self.tag_names(&self.edge_tags[&(from, to)]) })
+                    }
+                    _ => return Err("give `node`, or `from` and `to` for a link".into()),
+                }
+            }
             Op::RemoveNodeType { name } => {
                 let t = self.node_type_named(name)?.clone();
                 if t.id == style::DEFAULT_NODE_TYPE {
@@ -434,6 +502,7 @@ impl Work {
                     return Err(format!("{} is not linked to {}", self.name(from), self.name(to)));
                 }
                 self.edges.retain(|e| !(e.from == from && e.to == to));
+                self.edge_tags.remove(&(from, to));
                 self.writes.push(Write::Unlink { from, to });
                 // Nodes that were anchored through this edge are re-anchored without moving.
                 let changes = layout::repair_anchors(&self.places, &self.pairs());
@@ -668,18 +737,18 @@ mod tests {
         let g = Graph::new();
         run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }])).unwrap();
         let before = (links(&g), all_positions(&g));
-        // The first two ops are fine; the cycle in the third must undo everything.
+        // The first two ops are fine; the self-link in the third must undo everything.
         let err = run(
             &g,
             json!([
                 { "op": "create_node", "title": "c" },
                 { "op": "rename_node", "node": "#1", "title": "renamed" },
-                { "op": "link", "from": "#1", "to": "#2" },
+                { "op": "link", "from": "#1", "to": "#1" },
             ]),
         )
         .unwrap_err();
         assert_eq!(err.op_index, 2);
-        assert!(err.message.contains("cycle"), "{}", err.message);
+        assert!(err.message.contains("itself"), "{}", err.message);
         assert_eq!((links(&g), all_positions(&g)), before);
         assert_eq!(g.snapshot().nodes.len(), 2, "the create_node from the same batch was rolled back too");
     }
@@ -798,8 +867,9 @@ mod tests {
         run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }])).unwrap();
         let snap = g.snapshot();
         let (a, b) = (snap.nodes.values().find(|n| n.title == "a").unwrap().id, snap.nodes.values().find(|n| n.title == "b").unwrap().id);
-        // A second client's link a -> b arrives and is set aside.
-        g.create_edge(a, b, waypoint_model::EdgeTypeId::DEFAULT);
+        // A client's link of a to itself arrives and is set aside.
+        let _ = b;
+        g.create_edge(a, a, waypoint_model::EdgeTypeId::DEFAULT);
         g.apply_writes(&crate::repair::plan(&g.snapshot()));
         let reported = crate::api::conflicts(&g.snapshot());
         assert_eq!(reported["conflicts"].as_array().unwrap().len(), 1);
@@ -809,6 +879,55 @@ mod tests {
         assert_eq!(r[0]["was_conflicted"], true);
         assert!(g.snapshot().conflicted.is_empty());
         assert_eq!(links(&g).len(), 1, "the other link of the pair is untouched");
+    }
+
+    #[test]
+    fn tags_are_defined_once_and_put_on_nodes_and_links() {
+        let g = Graph::new();
+        run(&g, json!([{ "op": "create_node", "title": "a" }, { "op": "create_node", "title": "b", "destinations": ["$0"] }])).unwrap();
+        let err = run(&g, json!([{ "op": "set_tags", "node": "#1", "add": ["todo"] }])).unwrap_err();
+        assert!(err.message.contains("no tag"), "{}", err.message);
+        run(&g, json!([
+            { "op": "upsert_tag", "name": "todo", "glyph": "◻", "color": "#e6b450" },
+            { "op": "upsert_tag", "name": "done", "glyph": "✅" },
+            { "op": "set_tags", "node": "#1", "add": ["todo", "done"] },
+            { "op": "set_tags", "from": "#2", "to": "#1", "add": ["todo"] },
+        ])).unwrap();
+        let snap = g.snapshot();
+        let (a, b) = (snap.nodes.values().find(|n| n.title == "a").unwrap(), snap.nodes.values().find(|n| n.title == "b").unwrap());
+        assert_eq!(a.tags.len(), 2);
+        assert!(b.tags.is_empty());
+        assert_eq!(snap.edge_tags[&(b.id, a.id)].len(), 1);
+        let full = crate::api::full(&snap);
+        assert_eq!(full["links"][0]["tags"], json!(["todo"]));
+        assert_eq!(full["nodes"][0]["tags"].as_array().unwrap().len(), 2);
+
+        // Retyping a link keeps its tags; unlinking and linking again starts clean.
+        run(&g, json!([{ "op": "upsert_edge_type", "name": "blocks" }, { "op": "link", "from": "#2", "to": "#1", "edge_type": "blocks" }])).unwrap();
+        assert_eq!(g.snapshot().edge_tags[&(b.id, a.id)].len(), 1);
+        run(&g, json!([{ "op": "unlink", "from": "#2", "to": "#1" }, { "op": "link", "from": "#2", "to": "#1" }])).unwrap();
+        assert!(g.snapshot().edge_tags.get(&(b.id, a.id)).is_none_or(|t| t.is_empty()));
+
+        // Taking a tag off, and removing a tag from the registry.
+        run(&g, json!([{ "op": "set_tags", "node": "#1", "remove": ["todo"] }])).unwrap();
+        assert_eq!(g.snapshot().nodes[&a.id].tags.len(), 1);
+        let r = run(&g, json!([{ "op": "remove_tag", "name": "done" }])).unwrap();
+        assert_eq!(r[0]["was_on"], 1);
+        assert!(g.snapshot().nodes[&a.id].tags.is_empty(), "a removed tag is gone from what had it");
+        assert_eq!(g.snapshot().tags.len(), 1);
+    }
+
+    #[test]
+    fn tag_ops_check_their_input() {
+        let g = Graph::new();
+        run(&g, json!([{ "op": "create_node", "title": "a" }])).unwrap();
+        let msg = |ops: Value| run(&g, ops).unwrap_err().message;
+        assert!(msg(json!([{ "op": "upsert_tag", "name": "x" }])).contains("glyph"));
+        assert!(msg(json!([{ "op": "upsert_tag", "name": "x", "glyph": "ab" }])).contains("single glyph"));
+        run(&g, json!([{ "op": "upsert_tag", "name": "x", "glyph": "★" }])).unwrap();
+        assert!(msg(json!([{ "op": "set_tags", "node": "#1", "add": ["x"], "remove": ["x"] }])).contains("both"));
+        assert!(msg(json!([{ "op": "set_tags", "add": ["x"] }])).contains("`node`"));
+        assert!(msg(json!([{ "op": "set_tags", "from": "#1", "to": "#1", "add": ["x"] }])).contains("not linked"));
     }
 
     #[test]

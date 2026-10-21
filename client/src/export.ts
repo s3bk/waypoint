@@ -5,7 +5,7 @@
 
 import { inset, isSharp, outline } from "./draw";
 import { readableOn } from "./style";
-import { NODE_H, NODE_W, type Scene, type SceneEdge, type SceneNode } from "./scene";
+import { CHIP, CHIP_FONT, NODE_H, NODE_W, type Scene, type SceneEdge, type SceneNode } from "./scene";
 import { LINE_HEIGHT } from "./wrap";
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
@@ -47,8 +47,16 @@ function dashAttr(style: string, width: number): string {
   return "";
 }
 
+/** A tag chip centred at (x, y): a disc in the canvas colour with the symbol on it. */
+function chipSvg(background: string, tag: { glyph: string; color: string }, x: number, y: number): string {
+  return (
+    `<circle cx="${num(x)}" cy="${num(y)}" r="${CHIP / 2}" fill="${background}" stroke="${tag.color}"/>` +
+    `<text x="${num(x)}" y="${num(y)}" text-anchor="middle" dominant-baseline="central" font-size="${CHIP_FONT}" fill="${tag.color}">${esc(tag.glyph)}</text>`
+  );
+}
+
 /** One link, mirroring `drawEdge`: the line stops short of its heads, which are drawn on the node edges. */
-function edgeSvg(e: SceneEdge): string {
+function edgeSvg(e: SceneEdge, background: string): string {
   const t = e.type;
   const color = e.conflicted ? CONFLICT : t.color;
   const style = e.conflicted ? "dashed" : t.line_style;
@@ -84,11 +92,12 @@ function edgeSvg(e: SceneEdge): string {
     const deg = (e.label.angle * 180) / Math.PI;
     out += `<text transform="translate(${num(e.label.x)} ${num(e.label.y)}) rotate(${num(deg)})" text-anchor="middle" dy="0.35em" font-size="11" fill="${e.conflicted ? CONFLICT : t.text_color}">${esc(t.label)}</text>`;
   }
+  for (const c of e.tags) out += chipSvg(background, c.tag, c.x, c.y);
   return out;
 }
 
 /** `ink` is the text colour for what is drawn straight on the canvas. */
-function nodeSvg(n: SceneNode, ink: string): string {
+function nodeSvg(n: SceneNode, ink: string, background: string): string {
   const t = n.type;
   const pts = outline(t.shape, t.corners, NODE_W, NODE_H);
   const d = pts.map((p) => `${num(p.x)},${num(p.y)}`).join(" ");
@@ -108,6 +117,7 @@ function nodeSvg(n: SceneNode, ink: string): string {
     // Just below the node, in the canvas's text colour (see the renderer).
     out += `<text x="${NODE_W}" y="${NODE_H + 12}" text-anchor="end" font-size="10" fill="${ink}" fill-opacity="0.7">#${n.key}</text>`;
   }
+  n.tags.forEach((tag, i) => (out += chipSvg(background, tag, NODE_W - CHIP / 2 - 4 - i * (CHIP + 2), 0)));
   return out + "</g>";
 }
 
@@ -117,7 +127,7 @@ export function sceneToSvg(scene: Scene): { svg: string; width: number; height: 
   const b = bounds(scene);
   const [width, height] = [Math.ceil(b.w), Math.ceil(b.h)];
   const ink = readableOn(scene.background); // for text drawn straight on the canvas
-  const body = scene.edges.map(edgeSvg).join("") + scene.nodes.map((n) => nodeSvg(n, ink)).join("");
+  const body = scene.edges.map((e) => edgeSvg(e, scene.background)).join("") + scene.nodes.map((n) => nodeSvg(n, ink, scene.background)).join("");
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${num(b.x)} ${num(b.y)} ${width} ${height}" font-family="${FONT}">` +
     `<rect x="${num(b.x)}" y="${num(b.y)}" width="${width}" height="${height}" fill="${scene.background}"/>` +

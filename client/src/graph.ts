@@ -13,6 +13,8 @@ import {
   normalizeColor,
   readEdgeTypes,
   readNodeTypes,
+  readTags,
+  type Tag,
 } from "./style";
 
 export interface Vec2 {
@@ -33,8 +35,15 @@ export interface Edge {
   from: string;
   to: string;
   type: string;
-  /** Set by the server: this edge closes a cycle and is ignored by layout and cycle checks. */
+  /** Set by the server: this edge joins a node to itself and is set aside. */
   conflicted: boolean;
+}
+
+/** The tags (known ones only) that any of these document entries carries, in registry order. */
+function tagsOn(entries: Y.Map<unknown>[], known: Map<string, Tag>): Tag[] {
+  const on = new Set<string>();
+  for (const e of entries) for (const [k, v] of e.entries()) if (v === true && k.startsWith("tag:")) on.add(k.slice(4));
+  return [...known.values()].filter((t) => on.has(t.id));
 }
 
 export class Graph {
@@ -46,6 +55,8 @@ export class Graph {
   /** Type registries: `id -> Y.Map` of fields; the server writes them (see style.ts). */
   readonly nodeTypeMap = this.doc.getMap<Y.Map<unknown>>("node_types");
   readonly edgeTypeMap = this.doc.getMap<Y.Map<unknown>>("edge_types");
+  /** The tag registry; nodes and links point at its entries by id with `tag:<id>` fields. */
+  readonly tagMap = this.doc.getMap<Y.Map<unknown>>("tags");
   /** Viewers watch only: the server would ignore their edits, so they are never made. */
   readOnly = false;
 
@@ -126,11 +137,6 @@ export class Graph {
     });
   }
 
-  /** Live edges that count towards cycles (conflicted ones are set aside), as `[from, to]` pairs. */
-  activePairs(): [string, string][] {
-    return this.edges().filter((e) => !e.conflicted).map((e) => [e.from, e.to]);
-  }
-
   /** Live edges as `[from, to]` pairs, the shape the layout crate takes. Conflicted edges still join their ends. */
   edgePairs(except?: string): [string, string][] {
     return this.edges().filter((e) => e.key !== except).map((e) => [e.from, e.to]);
@@ -173,7 +179,7 @@ export class Graph {
       if (e.get("deleted") === true || !live(from) || !live(to)) return;
       const key = `${from as string}>${to as string}`;
       // The entry stored under the canonical key decides the type.
-      if (!byPair.has(key) || entryKey === key) byPair.set(key, { key, from: from as string, to: to as string, type: String(e.get("type")), conflicted: e.get("conflicted") === true });
+      if (!byPair.has(key) || entryKey === key) byPair.set(key, { key, from: from as string, to: to as string, type: String(e.get("type")), conflicted: e.get("conflicted") === true && from === to });
     });
     return [...byPair.values()];
   }
@@ -189,12 +195,25 @@ export class Graph {
     const background = this.background();
     const nodeTypes = readNodeTypes(fields(this.nodeTypeMap));
     const edgeTypes = readEdgeTypes(fields(this.edgeTypeMap), background);
+    const tags = readTags(fields(this.tagMap));
+    const tagById = new Map(tags.map((t) => [t.id, t]));
     const nodeById = new Map(nodeTypes.map((t) => [t.id, t]));
     const edgeById = new Map(edgeTypes.map((t) => [t.id, t]));
     return {
       background,
       nodeTypes,
       edgeTypes,
+      tags,
+      /** The tags on node `id` that exist, in registry order. */
+      nodeTags: (id: string): Tag[] => tagsOn(this.nodes.get(id) ? [this.nodes.get(id)!] : [], tagById),
+      /** The tags on the link from `from` to `to`. */
+      edgeTags: (from: string, to: string): Tag[] => {
+        const entries: Y.Map<unknown>[] = [];
+        this.edgeMap.forEach((e) => {
+          if (e.get("from") === from && e.get("to") === to && e.get("deleted") !== true) entries.push(e);
+        });
+        return tagsOn(entries, tagById);
+      },
       /** The type of node `id`; a node with no type, or a removed one, has the default. */
       nodeType: (id: string): NodeType => {
         const t = this.nodes.get(id)?.get("type");

@@ -121,7 +121,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "get_conflicts",
-            "description": "Links the server set aside because two people's changes, made at the same time, together closed a cycle. They are hidden from every other result. Each is {from, to}, from source to destination. Resolve one with unlink_nodes (remove it) after deciding which link is wrong.",
+            "description": "Links the server set aside because they join a node to itself. They are hidden from every other result. Each is {from, to}. Remove one with unlink_nodes.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -146,7 +146,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "link_nodes",
-            "description": "Link `from` (the source) to `to` (the destination). Refused if it would create a cycle or if from == to. Linking twice is harmless; linking an existing link with another `edge_type` changes its type.",
+            "description": "Link `from` (the source) to `to` (the destination). Links may form loops; refused only if from == to. Linking twice is harmless; linking an existing link with another `edge_type` changes its type.",
             "inputSchema": { "type": "object", "required": ["from", "to"], "properties": {
                 "from": node(node_help), "to": node(node_help),
                 "edge_type": { "type": "string", "description": "Name of an edge type (see get_types). Default: link (the old name depends_on still works)." }
@@ -186,7 +186,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "get_types",
-            "description": "The node types and edge types of this graph with their styles, and the canvas `background` colour. Read this before styling.",
+            "description": "The node types, edge types and tags of this graph with their styles, and the canvas `background` colour. Read this before styling.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
@@ -229,6 +229,27 @@ fn tool_list() -> Vec<Value> {
             "inputSchema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } }
         }),
         json!({
+            "name": "upsert_tag",
+            "description": "Create a tag, or change the one with this `name`. A tag is a small coloured symbol shown on nodes and links, e.g. `todo`, `done`, `assigned-seb`. `glyph` is one symbol or emoji (required for a new tag); `color` is #rrggbb and tints symbols (emoji keep their own colours). Tags are listed by get_types. Put them on things with set_tags.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": {
+                "name": { "type": "string", "description": "Handle: lowercase a-z, 0-9, _ - ." },
+                "new_name": { "type": "string" }, "glyph": { "type": "string", "description": "Exactly one character: a symbol or an emoji." }, "color": { "type": "string" }
+            } }
+        }),
+        json!({
+            "name": "remove_tag",
+            "description": "Remove a tag from the registry; it disappears from every node and link that had it.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } }
+        }),
+        json!({
+            "name": "set_tags",
+            "description": "Add and remove tags (by name) on a node, or on the link `from` -> `to`. Give `node`, or `from` and `to`. A node or link can carry several tags. get_node and get_full_graph show them.",
+            "inputSchema": { "type": "object", "properties": {
+                "node": node(node_help), "from": node(node_help), "to": node(node_help),
+                "add": { "type": "array", "items": { "type": "string" } }, "remove": { "type": "array", "items": { "type": "string" } }
+            } }
+        }),
+        json!({
             "name": "set_note",
             "description": "Replace a node's note. Every node has one note (Markdown allowed), shared by everyone and edited live in the margin of the web UI. Only the part that changed is edited, so someone typing elsewhere in the note is not overwritten. Send the whole new text; an empty string clears it. To add something without risking others' text, use append_note. get_node returns the current note.",
             "inputSchema": { "type": "object", "required": ["node", "body"], "properties": { "node": node(node_help), "body": { "type": "string", "description": "The whole note, at most 20000 characters." } } }
@@ -242,7 +263,7 @@ fn tool_list() -> Vec<Value> {
             "name": "apply_batch",
             "description": "Apply several operations atomically (all or none), at most 100. Each op is an object with an `op` field: create_node {title, destinations?, sources?}, rename_node {node, title}, delete_node {node}, link {from, to}, unlink {from, to}, move_node {node, x, y, with_destinations?}, set_note {node, body}, append_note {node, text}, tidy {aspect?}. A node created earlier in the batch can be referenced as \"$N\" where N is the index of its create_node op.",
             "inputSchema": { "type": "object", "required": ["ops"], "properties": {
-                "ops": { "type": "array", "items": { "type": "object", "required": ["op"], "properties": { "op": { "type": "string", "enum": ["create_node", "rename_node", "delete_node", "link", "unlink", "move_node", "set_node_type", "tidy", "layout", "upsert_node_type", "upsert_edge_type", "remove_node_type", "remove_edge_type", "set_note", "append_note"] } } } },
+                "ops": { "type": "array", "items": { "type": "object", "required": ["op"], "properties": { "op": { "type": "string", "enum": ["create_node", "rename_node", "delete_node", "link", "unlink", "move_node", "set_node_type", "tidy", "layout", "upsert_node_type", "upsert_edge_type", "remove_node_type", "remove_edge_type", "upsert_tag", "remove_tag", "set_tags", "set_note", "append_note"] } } } },
                 "label": { "type": "string", "description": "Optional note on what this batch is for." }
             } }
         }),
@@ -337,7 +358,7 @@ fn call_tool(name: &str, args: &Value, cfg: &Config, backend: &dyn Backend) -> R
         "get_types" => backend.get(&format!("{base}/types")),
         "set_node_type" => one(json!({ "op": "set_node_type", "node": node(args, "node")?, "node_type": str_arg(args, "node_type")? }))
             .map(|r| r["results"][0].clone()),
-        "upsert_node_type" | "upsert_edge_type" | "remove_node_type" | "remove_edge_type" => {
+        "upsert_node_type" | "upsert_edge_type" | "remove_node_type" | "remove_edge_type" | "upsert_tag" | "remove_tag" | "set_tags" => {
             let mut op = args.clone();
             op["op"] = json!(name);
             one(op).map(|r| r["results"][0].clone())
@@ -482,7 +503,7 @@ mod tests {
                 assert!(t["inputSchema"]["properties"][req.as_str().unwrap()].is_object(), "{}: {req}", t["name"]);
             }
         }
-        assert_eq!(names.len(), 27);
+        assert_eq!(names.len(), 30);
     }
 
     #[test]

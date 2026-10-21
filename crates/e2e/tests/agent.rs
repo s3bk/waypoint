@@ -66,17 +66,20 @@ async fn agents_edit_while_a_browser_watches() {
     let (status, body) = stack.call(&keys, &keys.editor, "POST", "/apply", Some(bad));
     assert_eq!((status, &body["op_index"]), (422, &json!(1)), "{body}");
     assert_eq!(stack.node_count(&keys), 2, "a failing batch changes nothing");
-    let cycle = json!({ "ops": [{ "op": "link", "from": "#1", "to": "#2" }] });
-    assert_eq!(stack.call(&keys, &keys.editor, "POST", "/apply", Some(cycle)).0, 422);
+    let looped = json!({ "ops": [{ "op": "link", "from": "#1", "to": "#2" }] });
+    assert_eq!(stack.call(&keys, &keys.editor, "POST", "/apply", Some(looped)).0, 200, "a link may close a loop");
+    until("the loop in the browser", || async { page.edge_count().await == 2 }).await;
+    let own = json!({ "ops": [{ "op": "link", "from": "#1", "to": "#1" }] });
+    assert_eq!(stack.call(&keys, &keys.editor, "POST", "/apply", Some(own)).0, 422);
 
     // MCP over stdio.
     let mut mcp = Mcp::start(&stack, &keys.editor);
     assert!(mcp.rpc("initialize", json!({ "protocolVersion": "2024-11-05" }))["result"].is_object());
-    assert_eq!(mcp.rpc("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 27);
+    assert_eq!(mcp.rpc("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 30);
     let made = mcp.tool("create_node", json!({ "title": "layout", "destinations": ["#1"] }));
     assert_ne!(made["result"]["isError"], true, "{made}");
     until("the browser to show the MCP node", || async { page.titles().await.contains(&"layout".to_owned()) }).await;
-    assert_eq!(page.edge_count().await, 2);
+    assert_eq!(page.edge_count().await, 3);
     mcp.tool("rename_node", json!({ "node": "#3", "title": "layout engine" }));
     until("the rename", || async { page.titles().await.contains(&"layout engine".to_owned()) }).await;
     let del = mcp.tool("delete_node", json!({ "node": "#3" }));

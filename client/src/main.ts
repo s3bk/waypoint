@@ -1,7 +1,6 @@
 import { Application, CanvasTextMetrics, Container, Graphics, Text, TextStyle } from "pixi.js";
 import { WebsocketProvider } from "y-websocket";
 import init, {
-  creates_cycle,
   derive_positions,
   move_group,
   move_node,
@@ -10,19 +9,22 @@ import { createGraph, forgetGraph, getAccess, linkFor as shareLink, rememberGrap
 import { Camera } from "./camera";
 import { drawEdge, exitPoint, isSharp, outline as shapeOutline, strokePath } from "./draw";
 import { exportPng, exportSvg, fileName } from "./export";
-import { NODE_H, NODE_W, type Scene } from "./scene";
+import { CHIP, CHIP_FONT, NODE_H, NODE_W, type Scene, type SceneEdge } from "./scene";
 import { LINE_HEIGHT, layoutTitle } from "./wrap";
 import { Graph, type Place, type Vec2 } from "./graph";
 import { setupLayout } from "./layoutMenu";
 import { setupMargin } from "./margin";
 import { setupMenu } from "./menu";
+import { setupTagBar } from "./tagbar";
 import { edgeSwatch, setupTypes } from "./types";
-import { hexNum, readableOn } from "./style";
+import { type Tag, hexNum, readableOn } from "./style";
 import { applyTheme } from "./theme";
 
 const NEW_TITLE = "New node";
 
 const EDGE_SELECTED = 0xffb454;
+/** Half the distance between the two links of a pair that run in opposite directions. */
+const PAIR_GAP = 9;
 const EDGE_CONFLICTED = 0xe5484d;
 const ACCENT = 0x5aa9ff;
 const SELECTED = 0xcfe3ff;
@@ -381,7 +383,6 @@ async function main() {
     const [from, to] = [c.node, target];
     if (from === to) return { from, to, problem: "a node cannot link to itself" };
     if (graph.edgePairs().some(([f, t]) => f === from && t === to)) return { from, to, problem: "already linked" };
-    if (creates_cycle(json(graph.activePairs()), from, to)) return { from, to, problem: "that would create a cycle" };
     return { from, to };
   }
 
@@ -420,6 +421,14 @@ async function main() {
   }
 
   function render() {
+    try {
+      draw();
+    } catch (e) {
+      console.error("waypoint: render failed:", e);
+    }
+  }
+
+  function draw() {
     world.removeChildren().forEach((c) => c.destroy({ children: true }));
     labels = [];
     const reg = graph.registry();
@@ -446,27 +455,48 @@ async function main() {
       const t = reg.nodeType(id);
       outlines.set(id, shapeOutline(t.shape, t.corners, NODE_W, NODE_H).map((q) => ({ x: q.x + p.x, y: q.y + p.y })));
     }
-    const exitOf = (id: string, toward: Vec2): Vec2 => exitPoint(outlines.get(id)!, centers.get(id)!, toward);
+    const exitOf = (id: string, toward: Vec2, centre = centers.get(id)!): Vec2 => exitPoint(outlines.get(id)!, centre, toward);
     const scene: Scene = { background: reg.background, nodes: [], edges: [] };
 
     // Edges first, so nodes cover the line ends.
     const edges = new Graphics();
     edgeSegments = [];
     const edgeLabels: Text[] = [];
-    for (const e of graph.edges()) {
+    const chips: { tag: Tag; x: number; y: number }[] = [];
+    const allEdges = graph.edges();
+    const pairs = new Set(allEdges.map((e) => `${e.from}>${e.to}`));
+    for (const e of allEdges) {
       const from = centers.get(e.from);
       const to = centers.get(e.to);
       if (!from || !to) continue;
-      const a = exitOf(e.from, to);
-      const b = exitOf(e.to, from);
+      // Links in both directions between two nodes run side by side, each shifted to its own side of the line.
+      let shift = { x: 0, y: 0 };
+      const len = Math.hypot(to.x - from.x, to.y - from.y);
+      if (len > 0 && pairs.has(`${e.to}>${e.from}`)) shift = { x: (-(to.y - from.y) / len) * PAIR_GAP, y: ((to.x - from.x) / len) * PAIR_GAP };
+      const moved = (q: Vec2): Vec2 => ({ x: q.x + shift.x, y: q.y + shift.y });
+      const a = exitOf(e.from, moved(to), moved(from));
+      const b = exitOf(e.to, moved(from), moved(to));
       edgeSegments.push({ key: e.key, a, b });
       const type = reg.edgeType(e.type);
       if (e.key === selectedEdge) drawEdge(edges, a, b, type, { color: EDGE_SELECTED, width: Math.max(3.5, type.width + 1.5) });
       else if (e.conflicted) drawEdge(edges, a, b, type, { color: EDGE_CONFLICTED, style: "dashed" });
       else drawEdge(edges, a, b, type);
 
-      const sceneEdge = { a, b, type, conflicted: e.conflicted, label: null as { x: number; y: number; angle: number } | null };
+      const sceneEdge: SceneEdge = { a, b, type, conflicted: e.conflicted, label: null, tags: [] };
       scene.edges.push(sceneEdge);
+      // Tag chips run along the line from its source end.
+      const tagsHere = reg.edgeTags(e.from, e.to);
+      if (tagsHere.length) {
+        const span = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        const [ux, uy] = [(b.x - a.x) / span, (b.y - a.y) / span];
+        const first = Math.min(26, Math.max(CHIP / 2, (span - (tagsHere.length - 1) * CHIP) / 2));
+        tagsHere.forEach((tag, i) => {
+          const d = first + i * CHIP;
+          const chip = { tag, x: a.x + ux * d, y: a.y + uy * d };
+          sceneEdge.tags.push(chip);
+          chips.push(chip);
+        });
+      }
       if (!type.label) continue; // an empty label draws nothing
       const label = new Text({
         text: type.label,
@@ -491,6 +521,17 @@ async function main() {
     }
     if (selectedEdge && !edgeSegments.some((s) => s.key === selectedEdge)) selectedEdge = null; // removed elsewhere
     world.addChild(edges, ...edgeLabels);
+    const drawChip = (parent: Container, tag: Tag, x: number, y: number) => {
+      const disc = new Graphics().circle(x, y, CHIP / 2).fill(hexNum(reg.background)).stroke({ width: 1, color: hexNum(tag.color) });
+      const glyph = new Text({ text: tag.glyph, style: { fill: hexNum(tag.color), fontSize: CHIP_FONT, fontFamily: FONT }, resolution: labelResolution() });
+      glyph.anchor.set(0.5);
+      glyph.position.set(x, y);
+      parent.addChild(disc, glyph);
+      labels.push(glyph);
+    };
+    const chipLayer = new Container();
+    for (const c of chips) drawChip(chipLayer, c.tag, c.x, c.y);
+    world.addChild(chipLayer);
 
     // The link being drawn, and whether the node under the pointer would accept it.
     let linkTarget: { id: string; problem?: string } | null = null;
@@ -541,7 +582,10 @@ async function main() {
       node.addChild(label);
       labels.push(label);
       const key = graph.key(id);
-      scene.nodes.push({ id, x: p.x, y: p.y, type, lines, untitled: !title, key });
+      const nodeTags = reg.nodeTags(id);
+      scene.nodes.push({ id, x: p.x, y: p.y, type, lines, untitled: !title, key, tags: nodeTags });
+      // Tag chips sit on the top edge, from the right corner inwards.
+      nodeTags.forEach((tag, i) => drawChip(node, tag, NODE_W - CHIP / 2 - 4 - i * (CHIP + 2), 0));
       if (key !== undefined) {
         // The short key (#12): how people and agents refer to this node. It never changes, even on rename.
         // It sits just below the node (a two-line title can fill the corner, and the corners of most shapes are empty canvas),
@@ -570,9 +614,12 @@ async function main() {
     applyCamera();
     margin?.update(selectedNode);
     typesPanel?.update();
+    tagBar?.update();
   }
 
   let typesPanel: ReturnType<typeof setupTypes> | undefined;
+  let tagBar: ReturnType<typeof setupTagBar> | undefined;
+  let menu: ReturnType<typeof setupMenu> | undefined;
 
   let margin: ReturnType<typeof setupMargin> | undefined;
   const hint = document.getElementById("hint")!;
@@ -1115,7 +1162,7 @@ async function main() {
       publishDrag();
       render();
     }
-    if (e.target instanceof Element && e.target.closest("#margin, #types-panel, #layout-panel")) return; // typing in a note or the types panel
+    if (e.target instanceof Element && e.target.closest("#margin, #types-panel, #layout-panel, #tag-bar")) return; // typing in a note or the types panel
     if (e.type !== "keydown" || editing || !mayEdit()) return;
     if (e.key === " " && selectedEdge) {
       e.preventDefault();
@@ -1207,6 +1254,18 @@ async function main() {
       return from && to ? { from, to } : null;
     },
   });
+  tagBar = setupTagBar(document.getElementById("tag-bar")!, {
+    graph,
+    canEdit,
+    send: (ops) => change("apply", "POST", { ops, label: "tags" }),
+    onShow: () => menu?.closeAll(),
+    selectedNode: () => selectedNode,
+    selectedEdge: () => {
+      if (!selectedEdge) return null;
+      const [from, to] = selectedEdge.split(">");
+      return from && to ? { from, to } : null;
+    },
+  });
   const fitCamera = (positions: Record<string, Vec2>) => {
     const all = Object.values(positions);
     if (all.length === 0) return;
@@ -1276,7 +1335,7 @@ async function main() {
     },
   });
   const byId = (id: string) => ({ button: document.getElementById(`${id}-button`)!, panel: document.getElementById(`${id}-panel`)! });
-  setupMenu(["layout", "types", "graphs", "share"].map(byId));
+  menu = setupMenu(["layout", "types", "graphs", "share"].map(byId));
   // Export buttons next to "Types", styled like it. They save what is on the canvas, cropped to the graph.
   const typesButton = document.getElementById("types-button")!;
   const exportButton = (label: string, id: string, run: () => Promise<boolean> | boolean) => {
@@ -1300,6 +1359,16 @@ async function main() {
   );
 
   graph.doc.on("update", render);
+  // An update that depends on one we never received waits in Yjs until a reload; say so.
+  let pendingSince = 0;
+  setInterval(() => {
+    const stuck = graph.doc.store.pendingStructs !== null || graph.doc.store.pendingDs !== null;
+    if (!stuck) pendingSince = 0;
+    else if (!pendingSince) pendingSince = Date.now();
+    else if (Date.now() - pendingSince > 3000 && Date.now() - pendingSince < 4500) {
+      console.warn("waypoint: an update is waiting for one that never arrived; reload to resync", graph.doc.store.pendingStructs);
+    }
+  }, 1000);
   awareness.on("change", render);
   render();
 

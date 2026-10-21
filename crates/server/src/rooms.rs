@@ -512,8 +512,8 @@ mod tests {
         assert!(client.try_recv().is_ok(), "and then about the keys");
 
         // A failed batch changes nothing and tells nobody.
-        let err = room.apply(&batch(serde_json::json!([{ "op": "link", "from": "#1", "to": "#2" }])), "tester").unwrap_err();
-        assert!(err.message.contains("cycle"));
+        let err = room.apply(&batch(serde_json::json!([{ "op": "link", "from": "#1", "to": "#1" }])), "tester").unwrap_err();
+        assert!(err.message.contains("itself"));
         assert!(client.try_recv().is_err());
 
         let expected = room.graph.snapshot();

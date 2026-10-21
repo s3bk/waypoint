@@ -7,6 +7,11 @@ interface Tool {
 }
 
 export function setupMenu(tools: Tool[]) {
+  const closeAll = () => {
+    closeTools();
+    closeMenu();
+    sync();
+  };
   const burger = document.getElementById("menu-button")!;
   const menu = document.getElementById("menu")!;
   const isOpen = (t: Tool) => t.panel.style.display === "block";
@@ -48,11 +53,10 @@ export function setupMenu(tools: Tool[]) {
     }
     sync();
   });
-  // A press elsewhere folds the menu away (open tools stay).
+  // A press elsewhere closes the menu and any open tool (the types panel sits outside #share).
   document.addEventListener("pointerdown", (e) => {
-    if (menu.classList.contains("open") && !(e.target as Element).closest("#share")) {
-      closeMenu();
-      sync();
-    }
+    if ((e.target as Element).closest("#share, #types-panel")) return;
+    if (menu.classList.contains("open") || tools.some(isOpen)) closeAll();
   });
+  return { closeAll };
 }

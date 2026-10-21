@@ -33,6 +33,7 @@ pub const DEFAULT_EDGE_TYPE: Uuid = Uuid::from_u128(0x0000_0000_0000_7000_8000_0
 pub enum Kind {
     Node,
     Edge,
+    Tag,
 }
 
 /// A node type. `bg` fills the box, `fg` colours the title and the two are
@@ -67,6 +68,29 @@ pub struct EdgeType {
     /// What the line ends in at the destination (`to`) end.
     pub end: String,
     pub text_color: String,
+}
+
+/// A tag: a small coloured symbol that can be put on any number of nodes and links (`TODO`, `done`, `assigned-seb`).
+/// Nodes and links point at it by `id`. `glyph` is one character to draw (an emoji or a symbol) that is meant
+/// to fit a 1em box; `color` tints it (emoji keep their own colours).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: Uuid,
+    pub name: String,
+    pub glyph: String,
+    pub color: String,
+}
+
+/// Fields of a tag to set; anything left out stays (or takes the default, for a new tag).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TagSpec {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyph: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// Fields of a node type to set; anything left out stays (or takes the default, for a new type).
@@ -280,6 +304,66 @@ pub fn apply_edge(mut base: EdgeType, spec: &EdgeSpec, background: &str) -> Resu
     Ok(base)
 }
 
+/// Whether `glyph` is a single character as a person sees it: one symbol or emoji, with any variation
+/// selector, skin tone or combining mark, a ZWJ sequence (family, profession) or a flag (two regional indicators).
+pub fn is_one_glyph(glyph: &str) -> bool {
+    if glyph.is_empty() || glyph.chars().count() > 12 {
+        return false;
+    }
+    let (mut bases, mut joined, mut regional) = (0, false, 0);
+    for c in glyph.chars() {
+        match c {
+            '\u{200d}' => joined = true,
+            '\u{fe0e}' | '\u{fe0f}' | '\u{20e3}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{0300}'..='\u{036f}' | '\u{e0020}'..='\u{e007f}' => {}
+            c if c.is_whitespace() || c.is_control() => return false,
+            '\u{1f1e6}'..='\u{1f1ff}' => {
+                regional += 1;
+                if regional % 2 == 1 {
+                    bases += 1;
+                }
+            }
+            _ => {
+                if !joined {
+                    bases += 1;
+                }
+                joined = false;
+            }
+        }
+    }
+    bases == 1
+}
+
+fn glyph(g: &str) -> Result<String, String> {
+    let g = g.trim();
+    if is_one_glyph(g) { Ok(g.to_owned()) } else { Err(format!("{g:?} is not a single glyph: give one symbol or emoji")) }
+}
+
+pub fn builtin_tag_color() -> &'static str {
+    "#e6b450"
+}
+
+/// Apply `spec` to `base` (the existing tag, or the defaults for a new one).
+pub fn apply_tag(mut base: Tag, spec: &TagSpec) -> Result<Tag, String> {
+    if let Some(n) = &spec.new_name {
+        base.name = normalize_name(n)?;
+    }
+    if let Some(g) = &spec.glyph {
+        base.glyph = glyph(g)?;
+    }
+    if let Some(c) = &spec.color {
+        base.color = normalize_color(c)?;
+    }
+    Ok(base)
+}
+
+pub fn new_tag(spec: &TagSpec) -> Result<Tag, String> {
+    let name = normalize_name(&spec.name)?;
+    if spec.glyph.is_none() {
+        return Err("a tag needs a `glyph`: one symbol or emoji".into());
+    }
+    apply_tag(Tag { id: Uuid::now_v7(), name, glyph: "●".into(), color: builtin_tag_color().into() }, &TagSpec { new_name: None, ..spec.clone() })
+}
+
 pub fn new_node(spec: &NodeSpec) -> Result<NodeType, String> {
     let name = normalize_name(&spec.name)?;
     let base = NodeType { id: Uuid::now_v7(), name, ..builtin_node() };
@@ -296,6 +380,26 @@ pub fn new_edge(spec: &EdgeSpec, background: &str) -> Result<EdgeType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_glyph_is_one_symbol() {
+        for ok in ["✓", "★", "🔥", "👍🏽", "❤️", "👨‍👩‍👧", "🇩🇪", "S", "1️⃣"] {
+            assert!(is_one_glyph(ok), "{ok}");
+        }
+        for bad in ["", "ab", "✓✓", "🔥🔥", " ", "TODO", "🇩🇪🇫🇷"] {
+            assert!(!is_one_glyph(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tags_need_a_glyph_and_a_name_and_take_a_colour() {
+        let spec = |g: Option<&str>, c: Option<&str>| TagSpec { name: "Todo".into(), glyph: g.map(Into::into), color: c.map(Into::into), ..TagSpec::default() };
+        assert!(new_tag(&spec(None, None)).unwrap_err().contains("glyph"));
+        assert!(new_tag(&spec(Some("ab"), None)).is_err());
+        assert!(new_tag(&spec(Some("◻"), Some("red"))).is_err());
+        let t = new_tag(&spec(Some("◻"), Some("#F00"))).unwrap();
+        assert_eq!((t.name.as_str(), t.glyph.as_str(), t.color.as_str()), ("todo", "◻", "#ff0000"));
+    }
 
     #[test]
     fn contrast_matches_known_values() {
